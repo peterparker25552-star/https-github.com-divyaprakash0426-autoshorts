@@ -30,10 +30,13 @@
   <div class="health" id="health"></div>
 </header>
 
+<div id="statstrip" class="statstrip" aria-label="AutoShorts statistics"></div>
+
 <main class="layout">
   <section class="episodes">
-    <div class="panel-head">
+    <div class="panel-head episode-head">
       <h2>Episodes</h2>
+      <input id="episodeSearch" class="search" type="search" placeholder="Search episodes…" aria-label="Search episodes">
       <span id="episodeCount" class="count-pill"></span>
     </div>
     <div id="episodeList" class="episode-list"></div>
@@ -43,6 +46,15 @@
     <div class="panel-head">
       <h2>Shorts</h2>
       <span id="clipCount" class="count-pill"></span>
+    </div>
+    <div class="toolbar">
+      <input id="clipSearch" class="search" type="search" placeholder="Search clips…" aria-label="Search clips">
+      <select id="clipSort" class="sortsel" aria-label="Sort clips">
+        <option value="score">Top score</option>
+        <option value="newest">Newest</option>
+        <option value="longest">Longest</option>
+      </select>
+      <button id="zipBtn" class="btn small">⬇ All (ZIP)</button>
     </div>
     <div id="shortsGrid" class="shorts-grid"></div>
     <div id="emptyShorts" class="empty">
