@@ -23,6 +23,33 @@ It opens at <http://localhost:8000> — keep the black window open while using i
 ./run.sh       # whenever you want to use the app
 ```
 
+**Android (via Termux):**
+
+1. Install [Termux from F-Droid](https://f-droid.org/packages/com.termux/) (the Play Store build is outdated — don't use it)
+2. In Termux:
+
+```bash
+pkg update -y && pkg install -y python ffmpeg git
+git clone -b arena/01a0853c-https-github-com-divyaprakash0426-autoshorts \
+  https://github.com/peterparker25552-star/https-github.com-divyaprakash0426-autoshorts.git autoshorts
+cd autoshorts
+bash install-android.sh   # once
+bash run-android.sh       # whenever you want to use the app
+```
+
+3. Open **http://localhost:8000** in Chrome. In Chrome's ⋮ menu choose
+   **"Add to Home screen"** to install it as an app with its own icon.
+4. Rendered shorts land in the `data/clips/` folder inside Termux. To copy
+   them to your phone's Downloads:
+
+```bash
+termux-setup-storage    # once — allow the permission
+cp data/clips/*.mp4 ~/storage/downloads/
+```
+
+AutoShorts automatically uses Termux's native (ARM) ffmpeg and binds to
+`0.0.0.0`, so any device on the same Wi-Fi can open the app too.
+
 **Manual (any OS):**
 
 ```bash
