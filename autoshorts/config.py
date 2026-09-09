@@ -63,8 +63,8 @@ DEFAULT_STYLE = "blur"          # "blur" (safe) or "crop" (center-crop)
 CAPTION_FONT = os.environ.get("AUTOSHORTS_FONT", "DejaVu Sans")
 CAPTION_WORDS_PER_LINE = 4      # words shown on screen at once
 
-# Subtitle languages requested from YouTube (first match wins)
-SUB_LANGS = "en.*,hi.*,hi-en,hinglish"
+# Subtitle languages tried one at a time to avoid burst requests / HTTP 429s.
+SUB_LANG_CHAIN = ["en", "hi", "en-orig", "en.*", "hi.*"]
 
 # Optional LLM refinement (any OpenAI-compatible endpoint). Off by default —
 # the built-in heuristic highlight engine works fully offline.

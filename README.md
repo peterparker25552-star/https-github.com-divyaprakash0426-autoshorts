@@ -10,6 +10,15 @@ playlist URL ──▶ yt-dlp ──▶ transcripts ──▶ highlight engine �
                  captions)                     questions · energy)   burned-in captions)
 ```
 
+## What's new in v0.2.0
+
+- **429-safe YouTube ingestion** — all yt-dlp calls are serialized and paced, subtitle languages are requested one at a time, and HTTP 429 responses get progressive backoff.
+- **Four highlight profiles** — choose **Viral**, **Story**, **Facts**, or **Energy** to change how moments are ranked.
+- **Preview picks** — inspect titles, ranges, scores, and reasons before downloading or rendering media.
+- **Manual clips** — cut any 5–180 second range; cached captions are used when present, but captions are optional.
+- **Serial job queue** — one background worker handles all jobs, reducing load on YouTube and the host machine.
+- **Clip library tools** — episode/clip search, score/date/duration sorting, native sharing, statistics, and one-click ZIP download.
+
 ## Quick start
 
 **Easiest (Windows):** download the ZIP, extract it, then double-click
@@ -30,8 +39,7 @@ It opens at <http://localhost:8000> — keep the black window open while using i
 
 ```bash
 pkg update -y && pkg install -y python ffmpeg git
-git clone -b arena/01a0853c-https-github-com-divyaprakash0426-autoshorts \
-  https://github.com/peterparker25552-star/https-github.com-divyaprakash0426-autoshorts.git autoshorts
+git clone https://github.com/peterparker25552-star/https-github.com-divyaprakash0426-autoshorts.git autoshorts
 cd autoshorts
 bash install-android.sh   # once
 bash run-android.sh       # whenever you want to use the app
@@ -62,12 +70,24 @@ Then either:
 1. **Paste a playlist URL** (pre-filled with the Raj Shamani playlist) and press **Load playlist**, or
 2. Press **⚡ Try demo** — generates 3 episodes of synthetic media with crafted transcripts and runs the *entire real pipeline* (highlight scoring → clipping → captioning → thumbnails). Useful when YouTube is unreachable (e.g. restricted networks) or for a quick tour.
 
-Per episode, pick **how many shorts**, the framing (**blurred background** or **center crop**) and the quality (**720×1280** or **1080×1920**), then hit **Generate**. Each finished short shows its score, why it was picked (hook, stats, emotion…), an inline player and a download button.
+Per episode, pick **how many shorts**, a scoring profile (**Viral**, **Story**, **Facts**, or **Energy**), a length, the framing (**blurred background** or **center crop**) and the quality (**720×1280** or **1080×1920**), then hit **Generate**. Use **Preview picks** to inspect the proposed moments without a media download, or **Manual clip** to cut an exact range. Each finished short shows its score, why it was picked (hook, stats, emotion…), an inline player, sharing, and download controls.
+
+## Rate-limit (HTTP 429) protection
+
+AutoShorts v0.2.0 deliberately trades a little speed for reliable caption fetching:
+
+- A thread-safe global pacer keeps every yt-dlp call at least **4 seconds** apart.
+- Caption languages are tried **one per request** (`en`, `hi`, `en-orig`, `en.*`, then `hi.*`) rather than in a burst.
+- yt-dlp also waits between subtitle and HTTP requests.
+- HTTP 429 / “Too Many Requests” responses trigger **20-second and 40-second backoffs** before the final attempt.
+- Successfully normalized transcripts are cached in `data/subs/`, so retries and later renders do not repeat completed caption work.
+
+If YouTube still reports a 429, wait **10–15 minutes** before retrying. Avoid repeatedly restarting jobs during that window; queued jobs run one at a time automatically.
 
 ## How the highlight engine works (no API keys needed)
 
-1. Captions are fetched (`en`/`hi` first) and split into sentence-like utterances.
-2. The transcript is scanned with sliding **sentence-aligned windows** (20–60 s by default). Each window is scored on signals that correlate with engaging short-form moments:
+1. Captions are fetched one language at a time and split into sentence-like utterances.
+2. The transcript is scanned with sliding **sentence-aligned windows** (20–60 s by default). Each window is scored with the selected Viral, Story, Facts, or Energy weight profile using signals that correlate with engaging short-form moments:
    - **hook phrases** — "the truth is", "nobody tells you", "sach bataun", …
    - **hard numbers / stats** — `40 crore`, `100 million`, percentages
    - **curiosity questions** — direct questions to the guest
@@ -95,16 +115,19 @@ The web UI is a thin client over a small JSON API:
 | Method | Route | Purpose |
 | --- | --- | --- |
 | `GET` | `/api/health` | version, YouTube reachability, ffmpeg path |
-| `GET` | `/api/state` | episodes, clips, active jobs |
+| `GET` | `/api/state` | episodes, clips, active jobs, and library stats |
 | `POST` | `/api/playlist` | `{url, limit}` — ingest playlist metadata |
 | `POST` | `/api/demo/load` | load the demo episodes |
-| `POST` | `/api/episodes/{id}/shorts` | `{count, min_dur, max_dur, style, quality}` — start job |
+| `POST` | `/api/episodes/{id}/shorts` | `{count, min_dur, max_dur, profile, style, quality}` — queue automatic clips |
+| `POST` | `/api/episodes/{id}/preview` | score and return moments without downloading/rendering |
+| `POST` | `/api/episodes/{id}/manual` | `{start, end, title, style, quality}` — queue an exact range |
 | `GET` | `/api/episodes/{id}/transcript` | parsed transcript segments |
+| `GET` | `/api/clips/zip?episode_id=…` | download all or per-episode clips as a ZIP |
 | `GET` | `/api/clips/{id}/file` · `/thumb` | media files |
 | `DELETE` | `/api/clips/{id}` | delete a clip |
 
 ## Notes & limits
 
-- **Captions dependency**: highlight picking needs a transcript. Videos without any caption track can't be processed yet (local Whisper transcription is a natural next step — see `autoshorts/highlights.py` for where scoring hooks in).
+- **Captions dependency**: automatic highlight picking and previews need a transcript. Manual ranges can still render without captions; local Whisper transcription is a natural future extension.
 - **Sandbox/network**: some hosted environments block YouTube. AutoShorts detects this and points you at demo mode; run it on your own machine for real downloads.
 - **Responsibility**: downloading and re-publishing creators' content may be restricted by copyright and platform terms. Use for personal study or with permission.

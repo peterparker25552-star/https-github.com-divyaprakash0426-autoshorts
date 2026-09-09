@@ -53,6 +53,25 @@ INTRO_NOISE = [
 ]
 FILLERS = ["um", "uh", "you know", "i mean", "kind of", "sort of", "basically"]
 
+PROFILES = {
+    "viral": {
+        "hook": 3.5, "numbers": 1.2, "questions": 1.0, "emotion": 1.0,
+        "superlative": 0.6, "wps": 3.0, "noise": -4.0, "filler": -1.0,
+    },
+    "story": {
+        "hook": 4.5, "numbers": 0.4, "questions": 1.0, "emotion": 2.2,
+        "superlative": 0.4, "wps": 1.5, "noise": -4.0, "filler": -1.0,
+    },
+    "facts": {
+        "hook": 2.0, "numbers": 3.0, "questions": 0.8, "emotion": 0.4,
+        "superlative": 1.6, "wps": 2.0, "noise": -4.0, "filler": -1.0,
+    },
+    "energy": {
+        "hook": 2.5, "numbers": 0.8, "questions": 1.2, "emotion": 1.2,
+        "superlative": 0.8, "wps": 5.0, "noise": -5.0, "filler": -2.0,
+    },
+}
+
 _NUM_RE = re.compile(
     r"\b\d[\d,.]*\b|crore|lakh|million|billion|percent|%"
 )
@@ -159,10 +178,13 @@ def find_highlights(
     min_dur: float = 20.0,
     max_dur: float = 60.0,
     min_gap: float = 5.0,
+    profile: str = "viral",
 ) -> list[Highlight]:
     """Slide sentence-aligned windows, score, return top non-overlapping."""
     if not sentences:
         return []
+
+    weights = PROFILES.get(profile, PROFILES["viral"])
 
     # Pre-score each sentence once
     per_sentence = [score_sentence(s) for s in sentences]
@@ -185,14 +207,14 @@ def find_highlights(
         )
 
         score = (
-            3.5 * min(agg["hook"], 3)
-            + 1.2 * min(agg["numbers"], 6)
-            + 1.0 * min(agg["questions"], 4)
-            + 1.0 * min(agg["emotion"], 5)
-            + 0.6 * min(agg["superlative"], 4)
-            + 3.0 * min(agg["wps"], 4.0)
-            - 4.0 * min(agg["noise"], 3)
-            - 1.0 * min(agg["filler"], 4)
+            weights["hook"] * min(agg["hook"], 3)
+            + weights["numbers"] * min(agg["numbers"], 6)
+            + weights["questions"] * min(agg["questions"], 4)
+            + weights["emotion"] * min(agg["emotion"], 5)
+            + weights["superlative"] * min(agg["superlative"], 4)
+            + weights["wps"] * min(agg["wps"], 4.0)
+            + weights["noise"] * min(agg["noise"], 3)
+            + weights["filler"] * min(agg["filler"], 4)
         )
         # duration preference: peak around ~35s
         sweet = min(dur, 90.0) / 35.0

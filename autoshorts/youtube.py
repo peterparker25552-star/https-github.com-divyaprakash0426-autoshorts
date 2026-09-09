@@ -9,6 +9,8 @@ from __future__ import annotations
 import json
 import shutil
 import subprocess
+import threading
+import time
 import urllib.request
 from pathlib import Path
 
@@ -20,7 +22,24 @@ class TranscriptUnavailable(RuntimeError):
     pass
 
 
-def _ytdlp() -> str:
+# Serialize and space every yt-dlp invocation made by this module. Holding the
+# lock while sleeping prevents another worker from starting inside the gap.
+_rate_lock = threading.Lock()
+_last_call = 0.0
+_MIN_INTERVAL = 4.0
+
+
+def _pace() -> None:
+    """Ensure all yt-dlp calls begin at least ``_MIN_INTERVAL`` apart."""
+    global _last_call
+    with _rate_lock:
+        wait = _MIN_INTERVAL - (time.monotonic() - _last_call)
+        if wait > 0:
+            time.sleep(wait)
+        _last_call = time.monotonic()
+
+
+def _ytdlp() -> str | None:
     """Find the yt-dlp executable (module or binary)."""
     if shutil.which("yt-dlp"):
         return "yt-dlp"
@@ -52,7 +71,10 @@ def run_ytdlp(args: list[str], timeout: int = 600) -> subprocess.CompletedProces
         raise RuntimeError("yt-dlp timed out — try again or pick fewer episodes.")
     if proc.returncode != 0:
         err = (proc.stderr or proc.stdout or "").strip().splitlines()
-        detail = next((l for l in reversed(err) if l.strip() and "WARNING" not in l), "unknown error")
+        detail = next(
+            (line for line in reversed(err) if line.strip() and "WARNING" not in line),
+            "unknown error",
+        )
         raise RuntimeError(f"yt-dlp failed: {detail[:300]}")
     return proc
 
@@ -82,6 +104,7 @@ def check_reachable(timeout: float = 6.0) -> bool:
 # --------------------------------------------------------------------------
 def list_playlist(playlist_url: str, limit: int = config.EPISODE_PAGE_SIZE) -> list[dict]:
     """Flat-list a playlist (id/title/duration) without downloading media."""
+    _pace()
     proc = run_ytdlp(
         [
             "-J", "--flat-playlist",
@@ -96,15 +119,15 @@ def list_playlist(playlist_url: str, limit: int = config.EPISODE_PAGE_SIZE) -> l
         raise RuntimeError("Could not parse playlist data from yt-dlp.")
     entries = data.get("entries") or []
     out = []
-    for e in entries:
-        vid = e.get("id")
+    for entry in entries:
+        vid = entry.get("id")
         if not vid:
             continue
         out.append(
             {
                 "id": vid,
-                "title": e.get("title") or vid,
-                "duration": e.get("duration") or 0,
+                "title": entry.get("title") or vid,
+                "duration": entry.get("duration") or 0,
                 "url": f"https://www.youtube.com/watch?v={vid}",
                 "channel": data.get("channel") or data.get("uploader") or "",
             }
@@ -117,73 +140,116 @@ def list_playlist(playlist_url: str, limit: int = config.EPISODE_PAGE_SIZE) -> l
 # --------------------------------------------------------------------------
 # Transcripts
 # --------------------------------------------------------------------------
-_SUB_GLOB = ("*.json3", "*.vtt", "*.srt")
+_SUB_EXTENSIONS = (".json3", ".vtt", ".srt")
+_RATE_LIMIT_MESSAGE = (
+    "YouTube is rate-limiting subtitle downloads (HTTP 429). Wait 10-15 "
+    "minutes and retry — transcripts are cached so no progress is lost."
+)
+
+
+def _subtitle_files(video_id: str) -> list[Path]:
+    files = [
+        path
+        for extension in _SUB_EXTENSIONS
+        for path in config.SUBS_DIR.glob(f"{video_id}*{extension}")
+    ]
+    return sorted(files, key=lambda path: 0 if path.suffix == ".json3" else 1)
+
+
+def load_cached_transcript(video_id: str) -> list[Segment]:
+    """Load a normalized transcript cache without making a network request."""
+    return _load_cached_segments(config.SUBS_DIR / f"{video_id}.segments.json")
 
 
 def get_transcript(video_id: str, video_url: str) -> tuple[list[Segment], str]:
-    """Fetch (and cache) a transcript for one video.
-
-    Returns (segments, source_label). Raises TranscriptUnavailable when
-    YouTube has no captions for the video.
-    """
+    """Fetch and cache one caption track, with paced HTTP 429 retries."""
     cache = config.SUBS_DIR / f"{video_id}.segments.json"
-    if cache.exists():
-        segs = _load_cached_segments(cache)
-        if segs:
-            return segs, "cached"
+    segments = _load_cached_segments(cache)
+    if segments:
+        return segments, "cached"
 
-    # download subs next to nothing else in a temp prefix
     prefix = config.SUBS_DIR / video_id
-    try:
-        run_ytdlp(
-            [
-                "--skip-download",
-                "--write-subs", "--write-auto-subs",
-                "--sub-langs", config.SUB_LANGS,
-                "--sub-format", "json3/vtt/srt/best",
-                "--no-overwrites",
-                "-o", str(prefix),
-                video_url,
-            ],
-            timeout=300,
-        )
-    except RuntimeError as e:
-        raise TranscriptUnavailable(str(e))
+    rate_limited_passes = 0
 
-    files = sorted(
-        (p for pat in _SUB_GLOB for p in Path(config.SUBS_DIR).glob(f"{video_id}*{pat}")),
-        key=lambda p: 0 if p.suffix == ".json3" else 1,
-    )
-    if not files:
-        raise TranscriptUnavailable(
-            "No captions available for this episode "
-            "(yt-dlp found no subtitle tracks)."
-        )
-    segments = load_transcript_file(files[0])
-    if not segments:
-        raise TranscriptUnavailable("Caption track downloaded but could not be parsed.")
+    for attempt in range(3):
+        hit_rate_limit = False
+        for language in config.SUB_LANG_CHAIN:
+            _pace()
+            try:
+                run_ytdlp(
+                    [
+                        "--skip-download",
+                        "--write-subs", "--write-auto-subs",
+                        "--sub-langs", language,
+                        "--sub-format", "json3/vtt/srt/best",
+                        "--sleep-subtitles", "2",
+                        "--sleep-requests", "1.5",
+                        "--no-overwrites",
+                        "-o", str(prefix),
+                        video_url,
+                    ],
+                    timeout=300,
+                )
+            except RuntimeError as exc:
+                error = str(exc)
+                if "429" in error or "Too Many Requests" in error:
+                    hit_rate_limit = True
+                    rate_limited_passes += 1
+                    break
+                # A missing language or unavailable track is not fatal. Still
+                # inspect disk first because yt-dlp can leave a usable subtitle
+                # file even when a later metadata request fails.
 
-    # normalize + cache, clean raw files
-    cache.write_text(
-        json.dumps(
-            [
-                {"start": round(s.start, 3), "end": round(s.end, 3), "text": s.text}
-                for s in segments
-            ],
-            ensure_ascii=False,
-        ),
-        encoding="utf-8",
-    )
-    for p in Path(config.SUBS_DIR).glob(f"{video_id}*"):
-        if p.suffix in (".json3", ".vtt", ".srt"):
-            p.unlink(missing_ok=True)
-    return segments, files[0].name
+            files = _subtitle_files(video_id)
+            if not files:
+                continue
+
+            source_name = files[0].name
+            segments = load_transcript_file(files[0])
+            if not segments:
+                # Do not let an unparseable no-overwrite file poison later
+                # language attempts.
+                for path in files:
+                    path.unlink(missing_ok=True)
+                continue
+
+            cache.write_text(
+                json.dumps(
+                    [
+                        {
+                            "start": round(segment.start, 3),
+                            "end": round(segment.end, 3),
+                            "text": segment.text,
+                        }
+                        for segment in segments
+                    ],
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+            for path in _subtitle_files(video_id):
+                path.unlink(missing_ok=True)
+            return segments, source_name
+
+        if hit_rate_limit:
+            if attempt < 2:
+                time.sleep(20 * (attempt + 1))
+            continue
+        # A complete pass without a 429 tried every language; another pass
+        # would only repeat the same no-caption result.
+        break
+
+    if rate_limited_passes == 3:
+        raise TranscriptUnavailable(_RATE_LIMIT_MESSAGE)
+    raise TranscriptUnavailable("No captions available for this episode")
 
 
 def _load_cached_segments(path: Path) -> list[Segment]:
+    if not path.exists():
+        return []
     try:
         raw = json.loads(path.read_text(encoding="utf-8"))
-        return [Segment(r["start"], r["end"], r["text"]) for r in raw]
+        return [Segment(row["start"], row["end"], row["text"]) for row in raw]
     except Exception:
         return []
 
@@ -193,6 +259,7 @@ def _load_cached_segments(path: Path) -> list[Segment]:
 # --------------------------------------------------------------------------
 def download_video(video_id: str, video_url: str) -> Path:
     """Download a video at <=720p mp4 (cached)."""
+    _pace()
     dest = config.MEDIA_DIR / f"{video_id}.mp4"
     if dest.exists() and dest.stat().st_size > 10_000:
         return dest
@@ -210,8 +277,8 @@ def download_video(video_id: str, video_url: str) -> Path:
     if not dest.exists():
         # maybe merged under a different extension
         alt = [
-            p for p in config.MEDIA_DIR.glob(f"{video_id}.*")
-            if p.suffix.lower() in (".mp4", ".mkv", ".webm")
+            path for path in config.MEDIA_DIR.glob(f"{video_id}.*")
+            if path.suffix.lower() in (".mp4", ".mkv", ".webm")
         ]
         if not alt:
             raise RuntimeError("Download finished but no video file was produced.")
