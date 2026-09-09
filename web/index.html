@@ -1,0 +1,61 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>AutoShorts — podcast → shorts</title>
+<link rel="stylesheet" href="/static/style.css">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>✂️</text></svg>">
+</head>
+<body>
+<header class="topbar">
+  <div class="brand">
+    <span class="logo">✂️</span>
+    <div>
+      <h1>Auto<span class="accent">Shorts</span></h1>
+      <p class="tagline">long podcasts → captioned vertical shorts</p>
+    </div>
+  </div>
+
+  <div class="loader">
+    <input id="playlistUrl" type="url" placeholder="YouTube playlist URL…"
+           spellcheck="false">
+    <button id="loadPlaylist" class="btn primary">Load playlist</button>
+    <button id="loadDemo" class="btn ghost">⚡ Try demo</button>
+  </div>
+
+  <div class="health" id="health"></div>
+</header>
+
+<main class="layout">
+  <section class="episodes">
+    <div class="panel-head">
+      <h2>Episodes</h2>
+      <span id="episodeCount" class="count-pill"></span>
+    </div>
+    <div id="episodeList" class="episode-list"></div>
+  </section>
+
+  <section class="shorts">
+    <div class="panel-head">
+      <h2>Shorts</h2>
+      <span id="clipCount" class="count-pill"></span>
+    </div>
+    <div id="shortsGrid" class="shorts-grid"></div>
+    <div id="emptyShorts" class="empty">
+      <div class="empty-icon">🎬</div>
+      <p>No shorts yet. Load a playlist (or <a href="#" id="demoLink">try the demo</a>),
+      then hit <b>Generate</b> on an episode.</p>
+    </div>
+  </section>
+</main>
+
+<footer>
+  AutoShorts runs everything locally — yt-dlp for media &amp; captions, a
+  built-in highlight engine, ffmpeg for rendering. Clip responsibly: respect
+  creators' rights and platform terms.
+</footer>
+
+<script src="/static/app.js"></script>
+</body>
+</html>

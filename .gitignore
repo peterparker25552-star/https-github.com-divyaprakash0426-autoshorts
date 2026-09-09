@@ -1,0 +1,14 @@
+# runtime data (downloaded media, rendered clips, state)
+data/
+
+# python
+__pycache__/
+*.pyc
+.venv/
+venv/
+.pytest_cache/
+
+# os / editor
+.DS_Store
+.idea/
+.vscode/
