@@ -1,4 +1,4 @@
 fastapi>=0.110
 uvicorn>=0.29
 yt-dlp>=2024.4.9
-imageio-ffmpeg>=0.4.9 ; platform_system != "Windows" or python_version < "3.99"
+imageio-ffmpeg>=0.4.9

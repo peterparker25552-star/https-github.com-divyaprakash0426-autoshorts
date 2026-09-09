@@ -12,6 +12,19 @@ playlist URL ──▶ yt-dlp ──▶ transcripts ──▶ highlight engine �
 
 ## Quick start
 
+**Easiest (Windows):** download the ZIP, extract it, then double-click
+**`install.bat`** once, and **`run.bat`** whenever you want to use the app.
+It opens at <http://localhost:8000> — keep the black window open while using it.
+
+**Easiest (macOS / Linux):**
+
+```bash
+./install.sh   # once
+./run.sh       # whenever you want to use the app
+```
+
+**Manual (any OS):**
+
 ```bash
 pip install -r requirements.txt   # ffmpeg ships via imageio-ffmpeg
 python run.py                     # open http://localhost:8000
