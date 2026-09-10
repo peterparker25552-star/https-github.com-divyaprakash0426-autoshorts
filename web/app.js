@@ -18,14 +18,22 @@ const CAPTION_OPTIONS = [
   ["pop", "pop"],
   ["minimal", "minimal"],
 ];
+const CAPTION_POS_OPTIONS = [
+  ["standard", "standard"],
+  ["low", "low"],
+];
 const SPEED_OPTIONS = [
   [1, "1.0×"],
   [1.1, "1.1×"],
   [1.25, "1.25×"],
+  [1.5, "1.5×"],
 ];
 const STYLE_OPTIONS = [
   ["blur", "blur bg"],
+  ["smart", "🎥 Smart"],
   ["crop", "center crop"],
+  ["fill", "fill"],
+  ["fit", "fit + bars"],
 ];
 const QUALITY_OPTIONS = [
   ["fast", "720p class"],
@@ -43,6 +51,7 @@ const SIGNAL_LABELS = {
 };
 
 const PRESET_KEY = "autoshorts.presets";
+const CARDOPTS_KEY = "autoshorts.cardOpts";
 
 let state = {
   data: null,
@@ -67,6 +76,8 @@ let baseDefaults = {
   quality: "fast",
   format: "vertical",
   captions: "classic",
+  captions_pos: "standard",
+  captions_box: false,
   speed: 1.0,
   progress: false,
   silence: false,
@@ -74,9 +85,17 @@ let baseDefaults = {
   playlist_url: "",
 };
 let presetOverlay = {};
-let cardOpts = {};
+let cardOpts = loadCardOpts();
 
 // ---------------------------------------------------------------- helpers
+function loadCardOpts() {
+  try { return JSON.parse(localStorage.getItem(CARDOPTS_KEY)) || {}; } catch (e) { return {}; }
+}
+
+function saveCardOpts() {
+  try { localStorage.setItem(CARDOPTS_KEY, JSON.stringify(cardOpts)); } catch (e) {}
+}
+
 function fmtDur(s) {
   if (!s && s !== 0) return "—";
   s = Math.round(s);
@@ -153,6 +172,10 @@ function readCardOpts(card) {
   const range = LENGTH_PRESETS[group?.value] || LENGTH_PRESETS.any;
   const pick = (selector, fallback) => card.querySelector(selector)?.value ?? fallback;
   const flag = (selector) => !!card.querySelector(selector)?.checked;
+  const rawSpeed = card.querySelector(".opt-speed")?.value;
+  let speed = parseFloat(rawSpeed);
+  if (!Number.isFinite(speed)) speed = baseDefaults.speed;
+  speed = Math.min(2, Math.max(0.5, speed));
   return {
     count: +(card.querySelector(".opt-count")?.value ?? baseDefaults.count),
     profile: pick(".opt-profile", baseDefaults.profile),
@@ -162,7 +185,9 @@ function readCardOpts(card) {
     quality: pick(".opt-quality", baseDefaults.quality),
     format: pick(".opt-format", baseDefaults.format),
     captions: pick(".opt-captions", baseDefaults.captions),
-    speed: +(card.querySelector(".opt-speed")?.value ?? baseDefaults.speed),
+    captions_pos: pick(".opt-cap-pos", baseDefaults.captions_pos),
+    captions_box: flag(".opt-cap-box"),
+    speed,
     progress: flag(".opt-progress"),
     silence: flag(".opt-silence"),
     loud: flag(".opt-loud"),
@@ -172,6 +197,7 @@ function readCardOpts(card) {
 function rememberCardOpts(card) {
   if (!card || !card.dataset.id) return;
   cardOpts[card.dataset.id] = readCardOpts(card);
+  if ($("#rememberOpts")?.checked !== false) saveCardOpts();
 }
 
 // ---------------------------------------------------------------- renderers
@@ -215,6 +241,14 @@ function signalBars(signals) {
   }).join("")}</div>`;
 }
 
+function waveformStrip(waveform) {
+  if (!Array.isArray(waveform) || !waveform.length) return "";
+  const bars = waveform
+    .map((value) => `<span style="height:${Math.round(12 + Number(value || 0) * 88)}%"></span>`)
+    .join("");
+  return `<div class="wave" title="loudness waveform">${bars}</div>`;
+}
+
 function intelLine(stats) {
   if (!stats) return "";
   return `<div class="intel">📊 ${stats.words} words · ${stats.sentences} sentences ·
@@ -236,7 +270,7 @@ function renderMoments(epId) {
         <div class="moment-main">
           <div class="moment-title">${esc(moment.title)}</div>
           <div class="reasons">${(moment.reasons || []).map((reason) => `<span class="reason">${esc(reason)}</span>`).join("")}</div>
-          ${signalBars(moment.signals)}
+          ${signalBars(moment.breakdown || moment.signals)}
         </div>
         <span class="moment-time">${fmtRange(moment.start, moment.end)}</span>
         <span class="moment-score">${Number(moment.score).toFixed(1)}</span>
@@ -264,15 +298,13 @@ function renderAdvOpts(ep, opts) {
     <summary>⚙ Fine-tune</summary>
     <div class="advgrid">
       <label>Captions <select class="opt-captions">${chosen(CAPTION_OPTIONS, opts.captions)}</select></label>
+      <label>Cap position <select class="opt-cap-pos">${chosen(CAPTION_POS_OPTIONS, opts.captions_pos)}</select></label>
+      <label class="toggle"><input class="opt-cap-box" type="checkbox"${checkedAttr(opts.captions_box)}> 📦 caption box</label>
       <label>Format <select class="opt-format">${chosen(FORMAT_OPTIONS, opts.format)}</select></label>
-      <label>Speed <select class="opt-speed">${chosen(SPEED_OPTIONS, opts.speed)}</select></label>
+      <label>Speed <input class="opt-speed" type="number" min="0.5" max="2" step="0.05" value="${Number(opts.speed) || 1}"></label>
       <label class="toggle"><input class="opt-progress" type="checkbox"${checkedAttr(opts.progress)}> progress bar</label>
       <label class="toggle"><input class="opt-silence" type="checkbox"${checkedAttr(opts.silence)}> jump-cut silence</label>
       <label class="toggle"><input class="opt-loud" type="checkbox"${checkedAttr(opts.loud)}> loudness</label>
-    </div>
-    <div class="advrow">
-      <button class="btn small" onclick="openCutter('${ep.id}')">✂ Transcript cutter</button>
-      <button class="btn small" onclick="openChapters('${ep.id}')">🔖 Chapters</button>
     </div>
   </details>`;
 }
@@ -290,7 +322,7 @@ function renderEpisodes() {
 
   if (!allEpisodes.length) {
     list.innerHTML = `<div class="empty" style="padding:34px 16px">
-      <p>Load a YouTube playlist above, or <a href="#" onclick="loadDemo();return false">try the demo</a>.</p>
+      <p>Load a YouTube playlist or single video above, or <a href="#" onclick="loadDemo();return false">try the demo</a>.</p>
     </div>`;
     return;
   }
@@ -305,6 +337,7 @@ function renderEpisodes() {
     const busy = status === "processing";
     const pct = job ? Math.round(job.progress * 100) : 0;
     const opts = optsFor(ep.id);
+    const disabled = busy ? "disabled" : "";
     return `
     <div class="episode" data-id="${ep.id}">
       <div class="title">${esc(ep.title)}</div>
@@ -319,38 +352,68 @@ function renderEpisodes() {
         <div class="stepmsg">${esc(job?.message || job?.step || "working…")}</div>` : ""}
       ${ep.error ? `<div class="stepmsg error">⚠ ${esc(ep.error)}</div>` : ""}
       <div class="controls">
-        <select class="opt-count" ${busy ? "disabled" : ""} aria-label="Number of shorts">
-          ${[3, 5, 8].map((n) => `<option value="${n}"${n === opts.count ? " selected" : ""}>${n} shorts</option>`).join("")}
+        <select class="opt-count" ${disabled} aria-label="Number of shorts">
+          ${[1, 2, 3, 5, 8, 12].map((n) => `<option value="${String(n)}"${String(n) === String(opts.count) ? " selected" : ""}>${n} shorts</option>`).join("")}
         </select>
-        <select class="opt-profile" ${busy ? "disabled" : ""} aria-label="Highlight profile">
+        <select class="opt-profile" ${disabled} aria-label="Highlight profile">
           <option value="viral"${opts.profile === "viral" ? " selected" : ""}>🔥 Viral</option>
           <option value="story"${opts.profile === "story" ? " selected" : ""}>📖 Story</option>
           <option value="facts"${opts.profile === "facts" ? " selected" : ""}>📊 Facts</option>
           <option value="energy"${opts.profile === "energy" ? " selected" : ""}>⚡ Energy</option>
         </select>
-        <select class="opt-length" ${busy ? "disabled" : ""} aria-label="Clip length">
+        <select class="opt-length" ${disabled} aria-label="Clip length">
           <option value="short"${lengthKey(opts.min_dur, opts.max_dur) === "short" ? " selected" : ""}>Short · 20–30s</option>
           <option value="medium"${lengthKey(opts.min_dur, opts.max_dur) === "medium" ? " selected" : ""}>Medium · 30–45s</option>
           <option value="long"${lengthKey(opts.min_dur, opts.max_dur) === "long" ? " selected" : ""}>Long · 45–60s</option>
           <option value="any"${lengthKey(opts.min_dur, opts.max_dur) === "any" ? " selected" : ""}>Any · 20–60s</option>
         </select>
-        <select class="opt-style" ${busy ? "disabled" : ""} aria-label="Framing style">
+        <select class="opt-style" ${disabled} aria-label="Framing style">
           ${chosen(STYLE_OPTIONS, opts.style)}
         </select>
-        <select class="opt-quality" ${busy ? "disabled" : ""} aria-label="Quality">
+        <select class="opt-quality" ${disabled} aria-label="Quality">
           ${chosen(QUALITY_OPTIONS, opts.quality)}
         </select>
-        <button class="btn primary small" onclick="generate('${ep.id}', this)" ${busy ? "disabled" : ""}>
+        <select class="opt-format" ${disabled} aria-label="Format">
+          ${chosen(FORMAT_OPTIONS, opts.format)}
+        </select>
+        <select class="opt-captions-main" ${disabled} aria-label="Caption style" onchange="syncCardSelect(this, '.opt-captions')">
+          ${chosen(CAPTION_OPTIONS, opts.captions)}
+        </select>
+        <button class="btn primary small" onclick="generate('${ep.id}', this)" ${disabled}>
           ${busy ? "Working…" : "Generate"}
         </button>
-        <button class="btn small" onclick="previewPicks('${ep.id}', this)" ${busy ? "disabled" : ""}>👁 Preview picks</button>
-        <button class="btn small" onclick="toggleManual('${ep.id}')" ${busy ? "disabled" : ""}>✂ Manual clip</button>
+        <button class="btn small" onclick="previewPicks('${ep.id}', this)" ${disabled}>👁 Preview</button>
       </div>
       ${renderAdvOpts(ep, opts)}
       ${renderMoments(ep.id)}
       ${renderManualBox(ep)}
+      <div class="subrow">
+        <button class="btn small" onclick="openCutter('${ep.id}')" ${disabled}>📜 Transcript cutter</button>
+        <button class="btn small" onclick="openChapters('${ep.id}')" ${disabled}>📑 Chapters</button>
+        <button class="btn small" onclick="exportCsv('${ep.id}')" ${disabled}>📊 CSV</button>
+        <button class="btn small" onclick="toggleManual('${ep.id}')" ${disabled}>✂ Exact range</button>
+        <span class="spacer"></span>
+        <a class="btn small" href="https://www.youtube.com/watch?v=${esc(ep.id)}" target="_blank" rel="noopener">↗ YouTube</a>
+        <button class="btn small iconbtn" title="Delete episode and its clips" onclick="deleteEpisode('${ep.id}', this)" ${disabled}>🗑</button>
+      </div>
     </div>`;
   }).join("");
+
+  // keep the main caption select in sync with the fine-tune one
+  document.querySelectorAll(".episode").forEach((card) => {
+    const main = card.querySelector(".opt-captions-main");
+    const fine = card.querySelector(".opt-captions");
+    if (main && fine) main.value = fine.value;
+  });
+}
+
+function syncCardSelect(source, targetSel) {
+  const card = source?.closest(".episode");
+  const target = card?.querySelector(targetSel);
+  if (target) {
+    target.value = source.value;
+    rememberCardOpts(card);
+  }
 }
 
 function renderShorts() {
@@ -384,8 +447,9 @@ function renderShorts() {
              src="/api/clips/${clip.id}/file"></video>
       <div class="body">
         <div class="clip-title">${esc(clip.title)}</div>
-        <div class="sub">From: <span title="${esc(clip.episode_title)}">${esc(trim(clip.episode_title, 42))}</span></div>
-        <div class="sub timechip">⏱ ${fmtRange(clip.start, clip.end)} · ${Number(clip.duration).toFixed(1)}s · ${clip.width || 720}×${clip.height || 1280}${clip.format && clip.format !== "vertical" ? ` · ${esc(clip.format)}` : ""}</div>
+        <div class="sub">From: <a href="https://www.youtube.com/watch?v=${esc(clip.episode_id)}&t=${Math.floor(clip.start || 0)}s" target="_blank" rel="noopener" title="${esc(clip.episode_title)}">${esc(trim(clip.episode_title, 42))}</a></div>
+        <div class="sub timechip">⏱ ${fmtRange(clip.start, clip.end)} · ${Number(clip.duration).toFixed(1)}s · ${clip.width || 720}×${clip.height || 1280}${clip.format && clip.format !== "vertical" ? ` · ${esc(clip.format)}` : ""} · ${esc(clip.style || "blur")}${clip.captions_box ? " 📦" : ""}${clip.captions_pos === "low" ? " ⬇" : ""}</div>
+        ${waveformStrip(clip.waveform)}
         <div class="scorebox">
           <div class="scorebar"><div class="fill" style="width:${Math.round((Number(clip.score || 0) / maxScore) * 100)}%"></div></div>
           <div class="scorenum">${Number(clip.score || 0).toFixed(1)}</div>
@@ -403,7 +467,9 @@ function renderShorts() {
         <div class="actions">
           <a class="btn small" href="/api/clips/${clip.id}/file" download="autoshort-${clip.id}.mp4">🎬 Video</a>
           <a class="btn small" href="/api/clips/${clip.id}/srt">💬 SRT</a>
+          ${clip.thumb ? `<a class="btn small" href="/api/clips/${clip.id}/thumb" target="_blank" rel="noopener">🖼 Thumb</a>` : ""}
           <button class="btn small" onclick="shareClip('${clip.id}')">📤 Share</button>
+          <button class="btn small" onclick="renameClip('${clip.id}')">✏️ Rename</button>
           <button class="btn small iconbtn" aria-label="Delete clip" onclick="deleteClip('${clip.id}')">🗑</button>
         </div>
         <div class="actions">
@@ -438,7 +504,7 @@ async function refresh() {
 
 async function loadPlaylist() {
   const url = $("#playlistUrl").value.trim();
-  if (!url) return toast("Paste a YouTube playlist URL first", true);
+  if (!url) return toast("Paste a YouTube playlist or video URL first", true);
   const btn = $("#loadPlaylist");
   btn.disabled = true;
   btn.textContent = "Loading…";
@@ -447,15 +513,16 @@ async function loadPlaylist() {
       method: "POST",
       body: JSON.stringify({ url, limit: 25 }),
     });
+    const kind = result.kind === "video" ? "video" : "playlist";
     toast(result.auto_queued
-      ? `Added ${result.added} episodes · auto-pilot queued ${result.auto_queued}`
-      : `Added ${result.added} episodes`);
+      ? `Added ${result.added} ${kind === "video" ? "video" : "episodes"} · auto-pilot queued ${result.auto_queued}`
+      : `Added ${result.added} ${kind === "video" ? "video" : "episodes"} from ${kind}`);
     if (result.auto_queued) fastPoll();
   } catch (error) {
     toast(error.message, true);
   } finally {
     btn.disabled = false;
-    btn.textContent = "Load playlist";
+    btn.textContent = "Load";
     refresh();
   }
 }
@@ -470,11 +537,8 @@ async function loadDemo() {
   refresh();
 }
 
-async function generate(epId, btn) {
-  const card = btn.closest(".episode");
-  rememberCardOpts(card);
-  const opts = readCardOpts(card);
-  const params = {
+function renderOptsPayload(opts) {
+  return {
     count: opts.count,
     min_dur: opts.min_dur,
     max_dur: opts.max_dur,
@@ -483,15 +547,23 @@ async function generate(epId, btn) {
     quality: opts.quality,
     format: opts.format,
     captions: opts.captions,
-    speed: opts.speed,
-    progress: opts.progress,
-    silence: opts.silence,
-    loud: opts.loud,
+    captions_pos: opts.captions_pos || "standard",
+    captions_box: !!opts.captions_box,
+    speed: Number(opts.speed) || 1,
+    progress: !!opts.progress,
+    silence: !!opts.silence,
+    loud: !!opts.loud,
   };
+}
+
+async function generate(epId, btn) {
+  const card = btn.closest(".episode");
+  rememberCardOpts(card);
+  const opts = readCardOpts(card);
   try {
     await api(`/api/episodes/${epId}/shorts`, {
       method: "POST",
-      body: JSON.stringify(params),
+      body: JSON.stringify(renderOptsPayload(opts)),
     });
     toast("Queued — jobs render one at a time");
     fastPoll();
@@ -509,19 +581,14 @@ async function previewPicks(epId, btn) {
   try {
     const result = await api(`/api/episodes/${epId}/preview`, {
       method: "POST",
-      body: JSON.stringify({
-        count: opts.count,
-        min_dur: opts.min_dur,
-        max_dur: opts.max_dur,
-        profile: opts.profile,
-      }),
+      body: JSON.stringify(renderOptsPayload(opts)),
     });
     state.previews[epId] = { moments: result.moments || [], stats: result.stats || null };
     renderEpisodes();
   } catch (error) {
     toast(error.message, true);
     btn.disabled = false;
-    btn.textContent = "👁 Preview picks";
+    btn.textContent = "👁 Preview";
   }
 }
 
@@ -556,15 +623,7 @@ async function cutManual(epId, btn) {
         start,
         end,
         title: card.querySelector(".manual-title").value.trim(),
-        profile: opts.profile,
-        style: opts.style,
-        quality: opts.quality,
-        format: opts.format,
-        captions: opts.captions,
-        speed: opts.speed,
-        progress: opts.progress,
-        silence: opts.silence,
-        loud: opts.loud,
+        ...renderOptsPayload(opts),
       }),
     });
     toast("Manual clip queued");
@@ -580,10 +639,39 @@ async function cutManual(epId, btn) {
 async function deleteClip(id) {
   try {
     await api(`/api/clips/${id}`, { method: "DELETE" });
+    toast("Clip deleted");
   } catch (error) {
     toast(error.message, true);
   }
   refresh();
+}
+
+async function deleteEpisode(id, btn) {
+  const ep = (state.data?.episodes || []).find((item) => item.id === id);
+  if (!confirm(`Delete “${trim(ep?.title || id, 60)}” and every clip made from it? This cannot be undone.`)) return;
+  if (btn) btn.disabled = true;
+  try {
+    const result = await api(`/api/episodes/${id}`, { method: "DELETE" });
+    toast(`Episode deleted · ${result.clips_removed} clip(s) removed`);
+    delete cardOpts[id];
+    saveCardOpts();
+  } catch (error) {
+    toast(error.message, true);
+    if (btn) btn.disabled = false;
+  }
+  refresh();
+}
+
+function exportCsv(epId) {
+  const card = document.querySelector(`.episode[data-id="${epId}"]`);
+  const opts = readCardOpts(card);
+  const url = `/api/episodes/${epId}/export?count=${encodeURIComponent(opts.count)}&profile=${encodeURIComponent(opts.profile)}`;
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = `autoshorts-${epId}-moments.csv`;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
 }
 
 async function copyText(text) {
@@ -623,6 +711,23 @@ async function shareClip(id) {
   }
 }
 
+async function renameClip(id) {
+  const clip = (state.data?.clips || []).find((item) => item.id === id);
+  if (!clip) return;
+  const title = prompt("New clip title (max 120 chars)", clip.title || "");
+  if (title === null) return;
+  try {
+    const result = await api(`/api/clips/${id}/rename`, {
+      method: "POST",
+      body: JSON.stringify({ title }),
+    });
+    toast(`Renamed to “${trim(result.title, 40)}”`);
+  } catch (error) {
+    toast(error.message, true);
+  }
+  refresh();
+}
+
 async function copyPack(id) {
   const clip = (state.data?.clips || []).find((item) => item.id === id);
   const pack = clip?.pack;
@@ -653,16 +758,20 @@ function rerenderClip(id) {
   if (!clip) return;
   const opts = { ...baseDefaults, ...presetOverlay, ...(clip.render || {}) };
   openModal("Re-render clip", `
-    <div class="stepmsg">${esc(clip.title)} · ${fmtRange(clip.start, clip.end)}</div>
+    <div class="stepmsg">${esc(clip.title)} · ${fmtRange(clip.start, clip.end)}<br>
+    Unchanged options keep the clip's stored settings (position, box, …).</div>
     <div class="advgrid">
       <label>Style <select id="rr-style">${chosen(STYLE_OPTIONS, opts.style)}</select></label>
       <label>Quality <select id="rr-quality">${chosen(QUALITY_OPTIONS, opts.quality)}</select></label>
       <label>Format <select id="rr-format">${chosen(FORMAT_OPTIONS, opts.format)}</select></label>
       <label>Captions <select id="rr-captions">${chosen(CAPTION_OPTIONS, opts.captions)}</select></label>
-      <label>Speed <select id="rr-speed">${chosen(SPEED_OPTIONS, opts.speed)}</select></label>
+      <label>Cap position <select id="rr-cappos">${chosen(CAPTION_POS_OPTIONS, opts.captions_pos || "standard")}</select></label>
+      <label class="toggle"><input id="rr-capbox" type="checkbox"${checkedAttr(opts.captions_box)}> 📦 caption box</label>
+      <label>Speed <input id="rr-speed" type="number" min="0.5" max="2" step="0.05" value="${Number(opts.speed) || 1}"></label>
       <label class="toggle"><input id="rr-progress" type="checkbox"${checkedAttr(opts.progress)}> progress bar</label>
       <label class="toggle"><input id="rr-silence" type="checkbox"${checkedAttr(opts.silence)}> jump-cut silence</label>
       <label class="toggle"><input id="rr-loud" type="checkbox"${checkedAttr(opts.loud)}> loudness</label>
+      <label>Title <input id="rr-title" type="text" maxlength="120" value="${esc(clip.title || "")}"></label>
     </div>
     <div class="cutbar"><button class="btn primary small" id="rr-go">♻ Re-render</button></div>`);
   $("#rr-go")?.addEventListener("click", async (event) => {
@@ -676,10 +785,13 @@ function rerenderClip(id) {
           quality: $("#rr-quality").value,
           format: $("#rr-format").value,
           captions: $("#rr-captions").value,
+          captions_pos: $("#rr-cappos").value,
+          captions_box: $("#rr-capbox").checked,
           speed: +$("#rr-speed").value,
           progress: $("#rr-progress").checked,
           silence: $("#rr-silence").checked,
           loud: $("#rr-loud").checked,
+          title: $("#rr-title").value,
         }),
       });
       toast("Re-render queued");
@@ -758,6 +870,7 @@ function applyPreset(name) {
   if (!preset) return;
   presetOverlay = { ...preset };
   cardOpts = {};
+  saveCardOpts();
   renderEpisodes();
   toast(`Preset “${name}” applied`);
 }
@@ -776,25 +889,14 @@ function deletePreset() {
 async function processAll() {
   const name = $("#presetSel").value;
   const opts = { ...baseDefaults, ...presetOverlay, ...(loadPresets()[name] || {}) };
-  const body = {
-    count: opts.count,
-    min_dur: opts.min_dur,
-    max_dur: opts.max_dur,
-    profile: opts.profile,
-    style: opts.style,
-    quality: opts.quality,
-    format: opts.format,
-    captions: opts.captions,
-    speed: opts.speed,
-    progress: !!opts.progress,
-    silence: !!opts.silence,
-    loud: !!opts.loud,
-  };
   const btn = $("#processAll");
   btn.disabled = true;
   btn.textContent = "Queueing…";
   try {
-    const result = await api("/api/batch", { method: "POST", body: JSON.stringify(body) });
+    const result = await api("/api/batch", {
+      method: "POST",
+      body: JSON.stringify(renderOptsPayload(opts)),
+    });
     const skipped = result.skipped ? ` · skipped ${result.skipped}` : "";
     toast(`Queued ${result.queued} episode(s)${skipped}`);
     if (result.queued) fastPoll();
@@ -802,7 +904,7 @@ async function processAll() {
     toast(error.message, true);
   } finally {
     btn.disabled = false;
-    btn.textContent = "⚡ All";
+    btn.textContent = "⚡ Process-all";
   }
   refresh();
 }
@@ -847,13 +949,63 @@ function modalBody() {
   return $("#modalRoot .modal-body");
 }
 
+// ---------------------------------------------------------------- search
+function openSearch() {
+  openModal("🔍 Search transcripts", `
+    <div class="stepmsg">Offline search over demo + downloaded transcripts — nothing hits the network.</div>
+    <div class="searchbar">
+      <input id="searchQ" type="search" placeholder="e.g. fear, 40 percent, CBI…" autocomplete="off">
+      <button class="btn primary small" id="searchGo">Search</button>
+    </div>
+    <div id="searchResults" class="tlines"><div class="stepmsg">Type at least 2 characters.</div></div>`, true);
+  const input = $("#searchQ");
+  $("#searchGo").addEventListener("click", runSearch);
+  input.addEventListener("keydown", (event) => {
+    if (event.key === "Enter") runSearch();
+  });
+  input.focus();
+}
+
+async function runSearch() {
+  const q = ($("#searchQ")?.value || "").trim();
+  const box = $("#searchResults");
+  if (!box) return;
+  if (q.length < 2) {
+    box.innerHTML = `<div class="stepmsg error">Query must be at least 2 characters.</div>`;
+    return;
+  }
+  box.innerHTML = `<div class="stepmsg">Searching…</div>`;
+  try {
+    const data = await api(`/api/search?q=${encodeURIComponent(q)}`);
+    const rows = data.results || [];
+    box.innerHTML = rows.length
+      ? rows.map((row) => `
+        <div class="tline clickable" onclick="jumpToHit('${row.episode_id}', ${row.start})">
+          <span class="tstamp">${fmtDur(row.start)}</span>
+          <span class="ttext"><b>${esc(row.episode_title)}</b><br>${esc(row.text)}</span>
+        </div>`).join("")
+      : `<div class="stepmsg">No hits. Transcripts are cached only after an episode is processed (demo episodes always search).</div>`;
+  } catch (error) {
+    box.innerHTML = `<div class="stepmsg error">⚠ ${esc(error.message)}</div>`;
+  }
+}
+
+function jumpToHit(epId, start) {
+  closeModal();
+  state.cutter = { epId, segments: [], start: null, end: null };
+  openCutter(epId, Math.max(0, start - 10));
+}
+
 // ---------------------------------------------------------------- chapters
 async function openChapters(epId) {
-  openModal("🔖 Chapters", `<div class="stepmsg">Scoring story moments…</div>`, true);
+  openModal("📑 Chapters", `<div class="stepmsg"><span class="spinner"></span>Scoring story moments…</div>`, true);
   try {
     const data = await api(`/api/episodes/${epId}/chapters`);
     modalBody().innerHTML = `
       <div class="stepmsg">${esc(trim(data.episode_title || "", 90))}</div>
+      <div class="tlines">${(data.chapters || []).map((chapter) => `
+        <div class="tline"><span class="tstamp">${fmtDur(chapter.start ?? chapter.time)}</span>
+        <span class="ttext">${esc(chapter.title)}</span></div>`).join("")}</div>
       <pre class="chapterpre">${esc(data.text || "")}</pre>
       <div class="cutbar">
         <span class="count-pill">${(data.chapters || []).length} chapters</span>
@@ -869,13 +1021,13 @@ async function openChapters(epId) {
 }
 
 // ---------------------------------------------------------------- cutter
-async function openCutter(epId) {
+async function openCutter(epId, scrollStart = null) {
   state.cutter = { epId, segments: [], start: null, end: null };
-  openModal("✂ Transcript cutter", `<div class="stepmsg">Loading transcript…</div>`, true);
+  openModal("📜 Transcript cutter", `<div class="stepmsg"><span class="spinner"></span>Loading transcript…</div>`, true);
   try {
     const data = await api(`/api/episodes/${epId}/transcript`);
     state.cutter.segments = data.segments || [];
-    renderCutter();
+    renderCutter(scrollStart);
   } catch (error) {
     modalBody().innerHTML = `<div class="stepmsg error">⚠ ${esc(error.message)}</div>`;
   }
@@ -891,12 +1043,12 @@ function cutterLineClass(segment) {
   return "";
 }
 
-function renderCutter() {
+function renderCutter(scrollStart = null) {
   const cutter = state.cutter;
   if (!cutter || !modalBody()) return;
   modalBody().innerHTML = `
     <div class="stepmsg">Tap a line for <b>START</b>, tap another for <b>END</b> — then cut it.</div>
-    <div class="tlines">
+    <div class="tlines" id="tlines">
       ${cutter.segments.map((segment, index) => `
         <div class="tline${cutterLineClass(segment)}" onclick="tapLine(${index})">
           <span class="tstamp">${fmtDur(segment.start)}</span>
@@ -908,6 +1060,11 @@ function renderCutter() {
       <button class="btn primary small" onclick="cutFromCutter()">✂ Cut range</button>
     </div>`;
   updateCutLabel();
+  if (scrollStart !== null) {
+    const lines = document.querySelectorAll("#tlines .tline");
+    const idx = cutter.segments.findIndex((segment) => segment.start >= scrollStart);
+    if (idx >= 0 && lines[idx]) lines[idx].scrollIntoView({ block: "center" });
+  }
 }
 
 function updateCutLabel() {
@@ -955,15 +1112,7 @@ async function cutFromCutter() {
         start: cutter.start,
         end: cutter.end,
         title,
-        profile: opts.profile,
-        style: opts.style,
-        quality: opts.quality,
-        format: opts.format,
-        captions: opts.captions,
-        speed: opts.speed,
-        progress: opts.progress,
-        silence: opts.silence,
-        loud: opts.loud,
+        ...renderOptsPayload(opts),
       }),
     });
     toast("Manual clip queued");
@@ -978,10 +1127,10 @@ async function cutFromCutter() {
 
 // ---------------------------------------------------------------- dashboard
 async function openDashboard() {
-  openModal("🛠 Dashboard", `<div class="stepmsg">Loading storage &amp; jobs…</div>`, true);
+  openModal("🛠 Dashboard", `<div class="stepmsg"><span class="spinner"></span>Loading storage &amp; jobs…</div>`, true);
   try {
     const [storage, jobs, health] = await Promise.all([
-      api("/api/storage"), api("/api/jobs?limit=20"), api("/api/health"),
+      api("/api/storage"), api("/api/jobs?limit=200"), api("/api/health"),
     ]);
     state.storage = storage;
     state.jobs = jobs.jobs || [];
@@ -997,10 +1146,19 @@ function dashboardHtml() {
   const health = state.health || {};
   const versions = health.versions || {};
   const dirs = storage.dirs || {};
-  const cleanButtons = ["media", "subs", "thumbs", "clips"].map((target) => `
-    <button class="btn small" onclick="cleanStorage('${target}', this)">🧹 ${target}</button>`).join("");
+  const jobs = state.jobs || [];
+  const done = jobs.filter((job) => job.status === "done").length;
+  const failed = jobs.filter((job) => job.status === "error").length;
+  const active = jobs.filter((job) => job.status === "queued" || job.status === "running").length;
+  const cancelled = jobs.filter((job) => job.status === "cancelled").length;
+  const cleanTargets = ["subs", "thumbs", "clips"];
 
   return `
+    <div class="jobstatline">
+      <span>✅ ${done} done</span> · <span>❌ ${failed} failed</span> ·
+      <span>⏳ ${active} active</span>${cancelled ? ` · <span>🚫 ${cancelled} cancelled</span>` : ""}
+    </div>
+
     <div class="dashgrid">
       <div class="kv"><span>Version</span><b>${esc(health.version || "?")}</b></div>
       <div class="kv"><span>Python</span><b>${esc(versions.python || "?")}</b></div>
@@ -1016,10 +1174,12 @@ function dashboardHtml() {
         <div class="storagerow">
           <span class="sname">${name}</span>
           <span class="smeta">${dirs[name]?.files ?? 0} files · ${fmtBytes(dirs[name]?.bytes)}</span>
-          <button class="btn small" onclick="cleanStorage('${name}', this)">🧹 Clean</button>
+          ${cleanTargets.includes(name)
+            ? `<button class="btn small" onclick="cleanStorage('${name}', this)">🧹 Clean</button>`
+            : `<span class="count-pill">kept for resumes</span>`}
         </div>`).join("")}
     </div>
-    <div class="cutbar">${cleanButtons}
+    <div class="cutbar">
       <span class="count-pill">clips: ${storage.counts?.clips ?? 0} · episodes: ${storage.counts?.episodes ?? 0}</span>
     </div>
 
@@ -1032,14 +1192,17 @@ function dashboardHtml() {
 
     <div class="minihead">Job history</div>
     <div class="jobs">
-      ${(state.jobs || []).length ? (state.jobs || []).map((job) => `
+      ${jobs.length ? jobs.map((job) => `
         <div class="job">
           <span class="badge status-${esc(job.status)}">${esc(job.status)}</span>
           <span class="jstep">${esc(job.step || "")}</span>
           <span class="jmsg" title="${esc(job.message || job.error || "")}">${esc(trim(job.message || job.error || "", 54))}</span>
           <span class="jmode">${esc((job.params || {}).kind === "manual" ? "manual" : `${(job.params || {}).count || ""} auto`)}</span>
-          <button class="btn small" onclick="retryJob('${job.id}')"
-                  ${job.status === "queued" || job.status === "running" ? "disabled" : ""}>↻ Retry</button>
+          ${job.status === "queued"
+            ? `<button class="btn small" title="Cancel before it starts" onclick="cancelJob('${job.id}')">✕</button>`
+            : (job.status === "done" || job.status === "error")
+              ? `<button class="btn small" onclick="retryJob('${job.id}')">↻ Retry</button>`
+              : ""}
         </div>`).join("") : `<div class="stepmsg">No jobs yet.</div>`}
     </div>`;
 }
@@ -1052,7 +1215,7 @@ async function cleanStorage(target, button) {
       method: "POST",
       body: JSON.stringify({ target }),
     });
-    toast(`Removed ${result.removed_files} file(s) · freed ${fmtBytes(result.freed_bytes)}`);
+    toast(`Removed ${result.removed ?? result.removed_files ?? 0} file(s) · freed ${fmtBytes(result.freed_bytes)}`);
   } catch (error) {
     toast(error.message, true);
   }
@@ -1085,8 +1248,20 @@ async function restoreFromFile(input) {
 
 async function retryJob(jobId) {
   try {
-    await api(`/api/jobs/${jobId}/retry`, { method: "POST" });
-    toast("Job re-queued");
+    const result = await api(`/api/jobs/${jobId}/retry`, { method: "POST" });
+    toast(`Job re-queued (${result.job_id})`);
+    fastPoll();
+  } catch (error) {
+    toast(error.message, true);
+  }
+  openDashboard();
+  refresh();
+}
+
+async function cancelJob(jobId) {
+  try {
+    await api(`/api/jobs/${jobId}/cancel`, { method: "POST" });
+    toast("Job cancelled before it started");
     fastPoll();
   } catch (error) {
     toast(error.message, true);
@@ -1147,6 +1322,7 @@ window.addEventListener("DOMContentLoaded", async () => {
   $("#loadDemo").addEventListener("click", loadDemo);
   $("#dashBtn").addEventListener("click", openDashboard);
   $("#processAll").addEventListener("click", processAll);
+  $("#searchBtn").addEventListener("click", openSearch);
   $("#presetSave").addEventListener("click", savePreset);
   $("#presetDelete").addEventListener("click", deletePreset);
   $("#presetSel").addEventListener("change", (event) => applyPreset(event.target.value));
@@ -1159,6 +1335,10 @@ window.addEventListener("DOMContentLoaded", async () => {
   $("#clipSearch").addEventListener("input", renderShorts);
   $("#clipSort").addEventListener("change", renderShorts);
   $("#zipBtn").addEventListener("click", downloadZip);
+
+  $("#playlistUrl").addEventListener("keydown", (event) => {
+    if (event.key === "Enter") loadPlaylist();
+  });
 
   await refresh();
   if (!$("#playlistUrl").value && baseDefaults.playlist_url) {
@@ -1173,13 +1353,19 @@ window.previewPicks = previewPicks;
 window.toggleManual = toggleManual;
 window.cutManual = cutManual;
 window.deleteClip = deleteClip;
+window.deleteEpisode = deleteEpisode;
+window.exportCsv = exportCsv;
 window.shareClip = shareClip;
+window.renameClip = renameClip;
 window.loadDemo = loadDemo;
+window.loadPlaylist = loadPlaylist;
 window.copyPack = copyPack;
 window.polishClip = polishClip;
 window.rerenderClip = rerenderClip;
 window.openChapters = openChapters;
 window.openCutter = openCutter;
+window.openSearch = openSearch;
+window.jumpToHit = jumpToHit;
 window.tapLine = tapLine;
 window.cutFromCutter = cutFromCutter;
 window.openDashboard = openDashboard;
@@ -1187,3 +1373,5 @@ window.closeModal = closeModal;
 window.cleanStorage = cleanStorage;
 window.restoreFromFile = restoreFromFile;
 window.retryJob = retryJob;
+window.cancelJob = cancelJob;
+window.syncCardSelect = syncCardSelect;

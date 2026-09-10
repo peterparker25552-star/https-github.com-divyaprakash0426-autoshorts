@@ -20,22 +20,22 @@ for _d in (DATA_DIR, MEDIA_DIR, CLIPS_DIR, THUMBS_DIR, SUBS_DIR):
 
 # --- ffmpeg ----------------------------------------------------------------
 def _find_ffmpeg() -> str:
-    """Locate an ffmpeg binary: env override, imageio-ffmpeg wheel, PATH."""
+    """Locate an ffmpeg binary: env override, system PATH, imageio wheel."""
     env = os.environ.get("AUTOSHORTS_FFMPEG")
     if env and Path(env).exists():
         return env
+    found = shutil.which("ffmpeg")
+    if found:
+        return found
     try:
         import imageio_ffmpeg
 
         return imageio_ffmpeg.get_ffmpeg_exe()
     except Exception:
         pass
-    found = shutil.which("ffmpeg")
-    if found:
-        return found
     raise RuntimeError(
-        "No ffmpeg found. Install ffmpeg on your system or "
-        "`pip install imageio-ffmpeg`."
+        "No ffmpeg found. Install ffmpeg on your system (Termux: "
+        "`pkg install ffmpeg`) or `pip install imageio-ffmpeg`."
     )
 
 
@@ -58,14 +58,20 @@ RENDER_HEIGHTS = {              # quality presets -> output height (9:16)
     "full": 1920,
 }
 DEFAULT_QUALITY = "fast"
-DEFAULT_STYLE = "blur"          # "blur" (safe) or "crop" (center-crop)
+DEFAULT_STYLE = "blur"
 
-# --- v0.3.0 render options --------------------------------------------------
+# --- v0.4.0 render options ---------------------------------------------------
 # Framing formats, caption styles and delivery speeds the API accepts. Every
 # one of them is validated by both servers before a job is queued.
 FORMATS = ("vertical", "square", "wide")
+STYLES = ("blur", "crop", "fill", "fit", "smart")
 CAPTION_STYLES = ("classic", "pop", "minimal")
-SPEEDS = (1.0, 1.1, 1.25)
+CAPTION_POSITIONS = ("standard", "low")
+DEFAULT_CAPTIONS_POS = "standard"
+DEFAULT_CAPTIONS_BOX = False
+
+SPEED_RANGE = (0.5, 2.0)        # inclusive; atempo stays clean inside this
+DEFAULT_SPEED = 1.0
 
 OUTPUT_SIZES = {                # format -> quality -> (width, height)
     "vertical": {"fast": (720, 1280), "full": (1080, 1920)},
@@ -74,10 +80,27 @@ OUTPUT_SIZES = {                # format -> quality -> (width, height)
 }
 DEFAULT_FORMAT = "vertical"
 DEFAULT_CAPTIONS = "classic"
-DEFAULT_SPEED = 1.0
 
 CAPTION_FONT = os.environ.get("AUTOSHORTS_FONT", "DejaVu Sans")
 CAPTION_WORDS_PER_LINE = 4      # words shown on screen at once
+CAPTION_MIN_FONT = 24           # auto-fit never shrinks a caption below this
+CAPTION_BOX_ALPHA = 0xC8        # near-opaque BackColour when captions_box
+
+# SMART framing: motion is measured per 2s chunk across left/center/right
+# thirds of a tiny grayscale proxy. A challenger third must clearly beat the
+# incumbent (hysteresis) or the crop stays put; calm scenes pull the crop to
+# the center; any analysis failure falls back to a static center crop.
+SMART_CHUNK_SECONDS = 2.0
+SMART_HYSTERESIS = 1.25         # challenger must exceed incumbent * 1.25
+SMART_CALM_YDIF = 0.35          # below this mean YDIF a chunk counts as calm
+SMART_PROXY_WIDTH = 240         # proxy scale width for motion analysis
+SMART_POSITIONS = ("left", "center", "right")
+
+# Progress bar (drawbox) colour: amber, top edge.
+PROGRESS_COLOR = "0xFFBF00"
+
+# Waveform: loudness bars saved on every clip for the card UI.
+WAVEFORM_BARS = 24
 
 # Subtitle languages tried one at a time to avoid burst requests / HTTP 429s.
 SUB_LANG_CHAIN = ["en", "hi", "en-orig", "en.*", "hi.*"]

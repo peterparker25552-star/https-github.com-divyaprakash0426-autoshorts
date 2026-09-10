@@ -1,8 +1,13 @@
-"""ffmpeg wrappers: render shorts (captions, formats, speeds, silence cuts),
-thumbnails and demo media.
+"""ffmpeg wrappers: render shorts (captions, formats, speeds, silence cuts,
+smart motion-tracking crops), loudness waveforms, thumbnails and demo media.
+
+Everything is plain stdlib + the ffmpeg binary. The render must never break:
+every analysis helper (motion thirds, silence detection, waveforms, probing)
+degrades to a safe fallback instead of raising.
 """
 from __future__ import annotations
 
+import math
 import re
 import subprocess
 import uuid
@@ -60,6 +65,32 @@ def probe_duration(path: Path) -> float | None:
     return None
 
 
+_VIDEO_SIZE = re.compile(r"Video:.*?,\s*(\d{2,5})x(\d{2,5})")
+
+
+def probe_video_size(path: Path | str) -> tuple[int, int] | None:
+    """(width, height) of the first video stream, or None when unknown."""
+    try:
+        proc = subprocess.run(
+            [config.FFMPEG_BIN, "-hide_banner", "-i", str(path)],
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+    except Exception:
+        return None
+    for line in (proc.stderr or "").splitlines():
+        if "Video:" not in line:
+            continue
+        match = _VIDEO_SIZE.search(line)
+        if match:
+            try:
+                return int(match.group(1)), int(match.group(2))
+            except ValueError:
+                return None
+    return None
+
+
 def has_audio(path: Path, timeout: int = 60) -> bool:
     """True when the file exposes at least one audio stream."""
     try:
@@ -84,6 +115,11 @@ def _escape_filter(path: str) -> str:
         .replace("]", "\\]")
         .replace(",", "\\,")
     )
+
+
+def _escape_expr(expr: str) -> str:
+    """Escape a numeric expression for ffmpeg's filter parser ('if(lt(t,..))')."""
+    return expr.replace(",", "\\,").replace("'", "")
 
 
 # --------------------------------------------------------------------------
@@ -118,21 +154,56 @@ def _style_params(caption_style: str, play_h: int) -> dict:
         return {
             "name": "Pop", "font_size": font_size, "bold": -1,
             "outline": max(3, font_size // 16), "margin_v": int(play_h * 0.30),
+            "low_margin_v": max(16, int(play_h * 0.045)),
         }
     if caption_style == "minimal":
         font_size = max(24, int(play_h * 0.030))
         return {
             "name": "Min", "font_size": font_size, "bold": 0,
             "outline": max(1, font_size // 22), "margin_v": int(play_h * 0.08),
+            "low_margin_v": max(12, int(play_h * 0.025)),
         }
     font_size = max(36, int(play_h * 0.045))
     return {
         "name": "Cap", "font_size": font_size, "bold": -1,
         "outline": max(2, font_size // 18), "margin_v": int(play_h * 0.30),
+        "low_margin_v": max(16, int(play_h * 0.045)),
     }
 
 
-def _ass_header(play_w: int, play_h: int, params: dict) -> str:
+# Rough average glyph width for DejaVu Sans as a fraction of the font size —
+# good enough to decide when a long word would overflow the frame.
+_CHAR_WIDTH_FACTOR = 0.62
+
+
+def autofit_fontsize(
+    font_size: int,
+    longest_word: int,
+    play_w: int,
+    min_size: int = config.CAPTION_MIN_FONT,
+    side_margin: float = 0.08,
+) -> int:
+    """Shrink ``font_size`` until the longest word fits the frame width.
+
+    9:16 frames are narrow; a 24-letter word at 67px would clip. The estimate
+    is deliberately conservative and never shrinks below ``min_size``.
+    """
+    if longest_word <= 0:
+        return int(font_size)
+    usable = int(play_w * (1.0 - side_margin * 2))
+    fitting = int(usable / (_CHAR_WIDTH_FACTOR * max(1, longest_word)))
+    return max(int(min_size), min(int(font_size), fitting))
+
+
+def _ass_header(play_w: int, play_h: int, params: dict, box: bool = False) -> str:
+    border_style = 3 if box else 1
+    if box:
+        # Opaque-box look: semi-dark outline box + near-opaque shadow colour.
+        outline_colour = "&H64000000"
+        back_colour = f"&H{config.CAPTION_BOX_ALPHA:02X}000000"
+    else:
+        outline_colour = "&H00000000"
+        back_colour = "&H64000000"
     return (
         "[Script Info]\n"
         "ScriptType: v4.00+\n"
@@ -146,8 +217,8 @@ def _ass_header(play_w: int, play_h: int, params: dict) -> str:
         " ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment,"
         " MarginL, MarginR, MarginV, Encoding\n"
         f"Style: {params['name']},{config.CAPTION_FONT},{params['font_size']},"
-        f"&H00FFFFFF,&H00FFFFFF,&H00000000,&H64000000,{params['bold']},0,0,0,"
-        f"100,100,0,0,1,{params['outline']},1,2,60,60,{params['margin_v']},1\n\n"
+        f"&H00FFFFFF,&H00FFFFFF,{outline_colour},{back_colour},{params['bold']},0,0,0,"
+        f"100,100,0,0,{border_style},{params['outline']},1,2,60,60,{params['margin_v']},1\n\n"
         "[Events]\n"
         "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV,"
         " Effect, Text\n"
@@ -164,6 +235,8 @@ def make_ass(
     words_per_caption: int = config.CAPTION_WORDS_PER_LINE,
     caption_style: str = config.DEFAULT_CAPTIONS,
     speed: float = config.DEFAULT_SPEED,
+    pos: str = config.DEFAULT_CAPTIONS_POS,
+    box: bool = config.DEFAULT_CAPTIONS_BOX,
 ) -> Path:
     """Build an ASS subtitle file for [clip_start, clip_end], 0-based times.
 
@@ -173,6 +246,16 @@ def make_ass(
     * ``pop`` — one event per word with the active word recoloured, upsized
       and bolded (``{\\c&H0000FFFF&\\b1\\fsN}word{\\r}``)
     * ``minimal`` — small lower-third line, original capitalisation
+
+    ``pos`` — ``standard`` keeps the style's usual bottom margin, ``low``
+    lowers MarginV toward the frame edge (thumb-safe zones).
+
+    ``box`` — draws a BackgroundStyle box (BorderStyle 3 with a near-opaque
+    BackColour) instead of a plain outline (BorderStyle 1).
+
+    Font auto-fit shrinks the style font whenever the longest word in the clip
+    would overflow the frame width (never below
+    :data:`config.CAPTION_MIN_FONT`).
 
     ``speed`` scales every event timestamp by ``1/speed`` because the renderer
     speeds the media up by the same factor.
@@ -186,8 +269,41 @@ def make_ass(
         rate = 1.0
 
     params = _style_params(style, play_h)
+    if str(pos) == "low":
+        params["margin_v"] = params["low_margin_v"]
     window = max(float(clip_end) - float(clip_start), 0.01)
     big_size = int(params["font_size"] * 1.3)
+
+    # Pass 1: collect the chunks so auto-fit sees the longest word of the
+    # whole clip, then size the font once for the whole file.
+    chunks: list[tuple[float, float, list[str]]] = []
+    for segment in segments:
+        words = [w for w in segment.text.split() if w]
+        if not words:
+            continue
+        duration = max(segment.end - segment.start, 0.4)
+        group = words_per_caption
+        if style == "minimal":
+            group = max(words_per_caption * 2, 6)
+        elif style == "pop":
+            group = max(1, min(words_per_caption, 3))
+        for offset in range(0, len(words), group):
+            part = words[offset : offset + group]
+            frac0 = offset / len(words)
+            frac1 = min((offset + len(part)) / len(words), 1.0)
+            chunk_start = segment.start + duration * frac0
+            chunk_end = segment.start + duration * frac1
+            if chunk_end <= clip_start or chunk_start >= clip_end:
+                continue
+            chunks.append((chunk_start, chunk_end, part))
+
+    longest = max((len(max(part, key=len)) for _, _, part in chunks), default=0)
+    if longest:
+        fitted = autofit_fontsize(params["font_size"], longest, play_w)
+        if fitted < params["font_size"]:
+            params["font_size"] = fitted
+            params["outline"] = max(1, fitted // 18)
+        big_size = int(params["font_size"] * 1.3)
 
     events: list[str] = []
 
@@ -199,52 +315,32 @@ def make_ass(
             f"{params['name']},,0,0,0,,{text}"
         )
 
-    for segment in segments:
-        words = [w for w in segment.text.split() if w]
-        if not words:
-            continue
-        duration = max(segment.end - segment.start, 0.4)
-        group = words_per_caption
-        if style == "minimal":
-            group = max(words_per_caption * 2, 6)
-        elif style == "pop":
-            group = max(1, min(words_per_caption, 3))
+    for chunk_start, chunk_end, part in chunks:
+        rel_start = max(0.0, chunk_start - clip_start)
+        rel_end = min(window, chunk_end - clip_start)
+        if rel_end - rel_start < 0.15:
+            rel_end = min(window, rel_start + 0.4)
 
-        for offset in range(0, len(words), group):
-            part = words[offset : offset + group]
-            frac0 = offset / len(words)
-            frac1 = min((offset + len(part)) / len(words), 1.0)
-            chunk_start = segment.start + duration * frac0
-            chunk_end = segment.start + duration * frac1
-            if chunk_end <= clip_start or chunk_start >= clip_end:
-                continue
-            rel_start = max(0.0, chunk_start - clip_start)
-            rel_end = min(window, chunk_end - clip_start)
-            if rel_end - rel_start < 0.15:
-                rel_end = min(window, rel_start + 0.4)
+        if style == "pop":
+            span = max(rel_end - rel_start, 0.2) / len(part)
+            for index, word in enumerate(part):
+                piece = [_ass_escape(other) for other in part]
+                piece[index] = (
+                    f"{{\\c&H0000FFFF&\\b1\\fs{big_size}}}"
+                    f"{_ass_escape(word)}{{\\r}}"
+                )
+                emit(
+                    rel_start + index * span,
+                    min(rel_end, rel_start + (index + 1) * span),
+                    " ".join(piece),
+                )
+        else:
+            text = " ".join(_ass_escape(word) for word in part)
+            if style == "classic":
+                text = text.upper()
+            emit(rel_start, rel_end, text)
 
-            if style == "pop":
-                span = max(rel_end - rel_start, 0.2) / len(part)
-                for index, word in enumerate(part):
-                    piece = [
-                        _ass_escape(other) for other in part
-                    ]
-                    piece[index] = (
-                        f"{{\\c&H0000FFFF&\\b1\\fs{big_size}}}"
-                        f"{_ass_escape(word)}{{\\r}}"
-                    )
-                    emit(
-                        rel_start + index * span,
-                        min(rel_end, rel_start + (index + 1) * span),
-                        " ".join(piece),
-                    )
-            else:
-                text = " ".join(_ass_escape(word) for word in part)
-                if style == "classic":
-                    text = text.upper()
-                emit(rel_start, rel_end, text)
-
-    header = _ass_header(play_w, play_h, params)
+    header = _ass_header(play_w, play_h, params, box=bool(box))
     out_path.write_text(header + "\n".join(events) + "\n", encoding="utf-8")
     return out_path
 
@@ -266,6 +362,237 @@ def audio_filter(speed: float = config.DEFAULT_SPEED, loud: bool = False) -> str
     return ",".join(parts)
 
 
+def _even(value: float) -> int:
+    """Round to the nearest even int (chroma-friendly). Never negative."""
+    n = int(round(float(value) / 2.0) * 2)
+    return max(0, n)
+
+
+def crop_dims(
+    src_w: int, src_h: int, out_w: int, out_h: int
+) -> tuple[int, int]:
+    """Even (w, h) crop window with the output aspect, inside the source."""
+    src_w = max(2, int(src_w))
+    src_h = max(2, int(src_h))
+    ratio = float(out_w) / max(1, float(out_h))
+    cw = _even(src_h * ratio)
+    if cw <= src_w:
+        return cw, _even(src_h)
+    ch = _even(src_w / ratio)
+    return _even(src_w), min(ch, _even(src_h))
+
+
+def _stepped_x_expr(points: list[tuple[float, int]]) -> str:
+    """Build a stepped numeric x(t) expression: a chain of ``if(lt(t,…))``.
+
+    ``points`` is ascending ``[(t, x)]`` where ``x`` applies from ``t`` until
+    the next boundary (the last x holds to the end). Never references
+    ``ow``/``iw`` — every offset is a baked numeric literal.
+    """
+    if not points:
+        return "0"
+    expr = str(int(points[-1][1]))
+    for i in range(len(points) - 2, -1, -1):
+        t_next = float(points[i + 1][0])
+        expr = f"if(lt(t,{t_next:.2f}),{int(points[i][1])},{expr})"
+    return expr
+
+
+def smart_x_expression(
+    positions: list[tuple[float, int]],
+    keeps: list[tuple[float, float]],
+    speed: float,
+    crop_w: int,
+    src_w: int,
+) -> str:
+    """Map per-chunk winners onto the OUTPUT timeline as a stepped x(t).
+
+    ``positions`` are ``(source_window_time, third_index)`` pairs from the
+    motion proxy. Each source timestamp is remapped through the silence keeps
+    (jump cuts) and divided by ``speed`` so the crop lands on the same spoken
+    moment in the rendered clip. Offsets are even ints clamped to
+    ``[0, src_w - crop_w]``.
+    """
+    try:
+        rate = float(speed)
+    except (TypeError, ValueError):
+        rate = 1.0
+    if rate <= 0:
+        rate = 1.0
+    span = max(int(src_w) - int(crop_w), 0)
+    mapped: dict[float, int] = {}
+    for t_src, third in positions:
+        t_out = remap_time(float(t_src), keeps or [(0.0, math.inf)]) / rate
+        x = min(_even(third * span / 2.0), span) if span else 0
+        mapped[round(t_out, 3)] = x  # later chunks win identical timestamps
+    if not mapped:
+        return "0"
+    points = sorted(mapped.items())
+    if points[0][0] > 0.011:  # anchor t=0 to the earliest winner
+        points.insert(0, (0.0, points[0][1]))
+    # merge consecutive equal offsets (keeps the expression short)
+    merged: list[tuple[float, int]] = []
+    for t, x in points:
+        if merged and merged[-1][1] == x:
+            continue
+        merged.append((t, x))
+    if len(merged) == 1:
+        return str(merged[0][1])
+    return _stepped_x_expr(merged)
+
+
+def pick_third(
+    scores: dict[str, float],
+    incumbent: str,
+    calm: float = config.SMART_CALM_YDIF,
+    hysteresis: float = config.SMART_HYSTERESIS,
+) -> str:
+    """Motion decision for one chunk — pure math, easy to unit-test.
+
+    * empty/no-signal scores → ``center``
+    * a calm chunk (max mean YDIF below ``calm``) → ``center``
+    * the incumbent holds unless a challenger is *clearly* higher
+      (``score > incumbent * hysteresis``)
+    """
+    vals = {
+        side: float(scores.get(side) or 0.0)
+        for side in config.SMART_POSITIONS
+    }
+    best = max(vals, key=lambda side: vals[side])
+    if not scores or vals[best] <= 0.0:
+        return "center"
+    if vals[best] < calm:
+        return "center"
+    if best == incumbent:
+        return incumbent
+    if vals[best] > vals.get(incumbent, 0.0) * hysteresis:
+        return best
+    return incumbent
+
+
+_YDIF_FRAME = re.compile(r"frame:\d+\s+pts:\d+\s+pts_time:([-\d.]+)")
+_YDIF_VALUE = re.compile(r"lavfi\.signalstats\.YDIF=([-+\d.eE]+|inf|-inf|nan)")
+
+
+def _third_ydif(
+    src: Path, start: float, dur: float, third: int, proxy_w: int
+) -> list[tuple[float, float]]:
+    """Per-frame (pts_time, YDIF) for one third of a tiny grayscale proxy."""
+    third_w = max(8, int(proxy_w) // 3)
+    offset = min(third * third_w, max(0, int(proxy_w) - third_w))
+    vf = (
+        f"scale={int(proxy_w)}:-2,format=gray,"
+        f"crop={third_w}:ih:{offset}:0,"
+        "signalstats,metadata=print:key=lavfi.signalstats.YDIF:file=-"
+    )
+    proc = subprocess.run(
+        [
+            config.FFMPEG_BIN, "-hide_banner", "-nostats", "-loglevel", "error",
+            "-ss", f"{float(start):.3f}", "-t", f"{float(dur):.3f}",
+            "-i", str(src),
+            "-vf", vf,
+            "-f", "null", "-",
+        ],
+        capture_output=True,
+        text=True,
+        timeout=600,
+    )
+    if proc.returncode != 0:
+        raise RuntimeError(proc.stderr[-200:] if proc.stderr else "YDIF analysis failed")
+    series: list[tuple[float, float]] = []
+    current_t: float | None = None
+    for line in (proc.stdout or "").splitlines():
+        frame = _YDIF_FRAME.search(line)
+        if frame:
+            current_t = float(frame.group(1))
+            continue
+        value = _YDIF_VALUE.search(line)
+        if value and current_t is not None:
+            try:
+                ydif = float(value.group(1))
+            except ValueError:
+                ydif = 0.0
+            if math.isfinite(ydif):
+                series.append((current_t, max(0.0, ydif)))
+            current_t = None
+    return series
+
+
+def _chunk_means(
+    series: list[tuple[float, float]], duration: float, chunk: float
+) -> list[float]:
+    """Mean YDIF per ``chunk``-second bucket (0.0 for empty buckets)."""
+    n = max(1, int(math.ceil(float(duration) / float(chunk))))
+    sums = [0.0] * n
+    counts = [0] * n
+    for t, v in series:
+        idx = min(n - 1, max(0, int(t / chunk)))
+        sums[idx] += v
+        counts[idx] += 1
+    return [sums[i] / counts[i] if counts[i] else 0.0 for i in range(n)]
+
+
+def analyze_motion(
+    src: Path,
+    start: float,
+    end: float,
+    chunk: float = config.SMART_CHUNK_SECONDS,
+    proxy_w: int = config.SMART_PROXY_WIDTH,
+) -> list[tuple[float, int]]:
+    """Per-chunk motion winners as ``(source_window_time, third_index)``.
+
+    The source window is analysed on a scaled-down proxy — every returned
+    timestamp is already source-window time, ready to be remapped through any
+    silence cuts. Raises on failure; the caller falls back to a static crop.
+    """
+    dur = max(float(end) - float(start), 0.5)
+    n_chunks = max(1, int(math.ceil(dur / float(chunk))))
+    means: dict[str, list[float]] = {}
+    for index, side in enumerate(config.SMART_POSITIONS):
+        series = _third_ydif(src, float(start), dur, index, proxy_w)
+        means[side] = _chunk_means(series, dur, chunk)
+    positions: list[tuple[float, int]] = []
+    incumbent = "center"
+    for i in range(n_chunks):
+        scores = {side: means[side][i] for side in config.SMART_POSITIONS}
+        incumbent = pick_third(scores, incumbent)
+        positions.append((round(i * float(chunk), 3),
+                          config.SMART_POSITIONS.index(incumbent)))
+    return positions
+
+
+def smart_crop_for_window(
+    src: Path,
+    start: float,
+    end: float,
+    out_w: int,
+    out_h: int,
+    keeps: list[tuple[float, float]] | None,
+    speed: float,
+) -> tuple[int, int, str] | None:
+    """(crop_w, crop_h, x-expression) for a smart render, or None on failure.
+
+    ANY failure (missing source size, dead ffmpeg, empty analysis) returns
+    ``None`` so the render falls back to a static center crop instead of
+    breaking.
+    """
+    try:
+        size = probe_video_size(src)
+        if not size:
+            return None
+        src_w, src_h = size
+        cw, ch = crop_dims(src_w, src_h, int(out_w), int(out_h))
+        if src_w - cw < 8:  # nothing to track — already full-width
+            return cw, ch, "0"
+        positions = analyze_motion(src, float(start), float(end))
+        expr = smart_x_expression(
+            positions, keeps or [], float(speed), cw, src_w
+        )
+        return cw, ch, expr
+    except Exception:
+        return None
+
+
 def video_chain(
     style: str,
     width: int,
@@ -274,36 +601,67 @@ def video_chain(
     out_dur: float | None = None,
     progress: bool = False,
     vin: str = "0:v",
+    fmt: str = config.DEFAULT_FORMAT,
+    smart: tuple[int, int, str] | None = None,
+    speed: float = config.DEFAULT_SPEED,
 ) -> str:
     """Video filter chain that ends in ``[v]``.
 
-    ``style`` doubles as the framing mode:
+    ``fmt`` drives the frame geometry; ``style`` drives the framing look:
 
-    * ``wide`` — scale down and pad with black bars (letterbox), ignoring the
-      blur/crop style because a 16:9 cut always needs the full frame
-    * ``crop`` — centre crop, parameterised by the target width/height ratio
-    * anything else — the blur-background + centred foreground look
+    * ``wide`` format — plain scale + pad; styles are ignored because a 16:9
+      cut always needs the full frame
+    * ``blur`` — blurred background + sharp fitted foreground
+    * ``crop`` / ``fill`` — scale to fill, center crop
+    * ``fit`` — scale to fit, padded with black
+    * ``smart`` — motion-tracking crop (``smart`` carries the pre-computed
+      ``(crop_w, crop_h, x_expr)``; without it, a static center crop)
 
-    ``progress`` appends a ``drawbox`` bar whose width is
-    ``iw*min(t/D\\,1)`` (the comma stays backslash-escaped for ffmpeg's filter
-    parser).
+    ``speed`` > 1 compresses the *single-pass* timeline (``setpts``); the
+    silence path already bakes speed into its per-segment chains, so it passes
+    1.0 here.
+
+    ``progress`` appends an amber ``drawbox`` bar along the top edge whose
+    width is ``iw*min(t/D\\,1)``.
     """
     width = max(2, int(width))
     height = max(2, int(height))
+    try:
+        rate = float(speed)
+    except (TypeError, ValueError):
+        rate = 1.0
+    if rate <= 0:
+        rate = 1.0
+    wide = fmt == "wide" or style == "wide"
 
-    if style == "wide":
+    if wide:
         head = (
             f"[{vin}]scale={width}:{height}:force_original_aspect_ratio=decrease,"
             f"pad={width}:{height}:(ow-iw)/2:(oh-ih)/2:color=black"
         )
-    elif style == "crop":
+    elif style == "smart":
+        if smart:
+            cw, ch, expr = smart
+            head = (
+                f"[{vin}]crop={int(cw)}:{int(ch)}:'{_escape_expr(expr)}':0,"
+                f"scale={width}:{height}"
+            )
+        else:
+            head = (
+                f"[{vin}]scale={width}:{height}:force_original_aspect_ratio=increase,"
+                f"crop={width}:{height}"
+            )
+    elif style in ("crop", "fill"):
         head = (
-            f"[{vin}]crop='min(iw,ih*{width}/{height})':"
-            f"'min(ih,iw*{height}/{width})',"
-            f"scale={width}:{height}:force_original_aspect_ratio=increase,"
+            f"[{vin}]scale={width}:{height}:force_original_aspect_ratio=increase,"
             f"crop={width}:{height}"
         )
-    else:
+    elif style == "fit":
+        head = (
+            f"[{vin}]scale={width}:{height}:force_original_aspect_ratio=decrease,"
+            f"pad={width}:{height}:(ow-iw)/2:(oh-ih)/2:color=black"
+        )
+    else:  # blur (default)
         head = (
             f"[{vin}]split=2[bg][fg];"
             f"[bg]scale={width}:{height}:force_original_aspect_ratio=increase,"
@@ -312,13 +670,16 @@ def video_chain(
             f"[bgb][fgs]overlay=(W-w)/2:(H-h)/2"
         )
 
+    if abs(rate - 1.0) > 1e-9:
+        head += f",setpts=PTS/{rate:g}"
+
     tail = ""
     if ass:
         tail += f",ass={_escape_filter(str(ass))}"
     if progress and out_dur and float(out_dur) > 0:
         tail += (
             f",drawbox=x=0:y=0:w='iw*min(t/{float(out_dur):.3f}\\,1)':h=6:"
-            "color=0xFF4D6D@0.9:t=fill"
+            f"color={config.PROGRESS_COLOR}@0.9:t=fill"
         )
     return f"{head}{tail}[v]"
 
@@ -376,9 +737,9 @@ def invert_ranges(
 def remap_time(t: float, ranges: list[tuple[float, float]]) -> float:
     """Map a source time onto the jump-cut (concatenated) timeline.
 
-    Times inside a removed silence clamp to the next kept range's start, so an
-    event spanning a cut simply shrinks — :func:`remap_ass_file` drops it when
-    what is left is shorter than the drop threshold.
+    With the identity keeps ``[(0, inf)]`` this is the identity. Times inside
+    a removed silence clamp to the next kept range's start, so an event
+    spanning a cut simply shrinks.
     """
     offset = 0.0
     for start, end in ranges:
@@ -515,9 +876,73 @@ def detect_silences(
             text=True,
             timeout=timeout,
         )
+        if proc.returncode != 0:
+            return []
+        return parse_silences(proc.stderr or "", min_dur=min_dur)
     except Exception:
         return []
-    return parse_silences(proc.stderr or "", min_dur=min_dur)
+
+
+# --------------------------------------------------------------------------
+# Loudness waveform (per-clip mini bars for the card UI)
+# --------------------------------------------------------------------------
+_R128_FRAME = re.compile(r"pts_time:([-\d.]+)")
+_R128_VALUE = re.compile(r"lavfi\.r128\.M=([-+\d.eE]+|-inf|inf|nan)")
+
+
+def loudness_waveform(
+    path: Path | str, bars: int = config.WAVEFORM_BARS, timeout: int = 300
+) -> list[float]:
+    """``bars`` loudness values in [0, 1] via ebur128 momentary loudness.
+
+    Returns ``[]`` on any failure (no audio, dead ffmpeg, unparsable output) —
+    the card UI simply hides the strip.
+    """
+    path = Path(path)
+    bars = max(4, int(bars))
+    try:
+        proc = subprocess.run(
+            [
+                config.FFMPEG_BIN, "-hide_banner", "-nostats", "-loglevel", "error",
+                "-i", str(path),
+                "-filter_complex",
+                "ebur128=metadata=1:peak=none,ametadata=print:key=lavfi.r128.M:file=-",
+                "-f", "null", "-",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+        )
+        if proc.returncode != 0:
+            return []
+        samples: list[tuple[float, float]] = []
+        current_t: float | None = None
+        for line in (proc.stdout or "").splitlines():
+            frame = _R128_FRAME.search(line)
+            if frame:
+                current_t = float(frame.group(1))
+                continue
+            value = _R128_VALUE.search(line)
+            if value and current_t is not None:
+                try:
+                    m = float(value.group(1))
+                except ValueError:
+                    m = float("nan")
+                if math.isfinite(m):
+                    samples.append((current_t, m))
+                current_t = None
+        if not samples:
+            return []
+        duration = max(samples[-1][0], 0.1)
+        means = _chunk_means(samples, duration, duration / bars)
+        lo, hi = min(means), max(means)
+        if hi - lo < 0.5:  # near-constant loudness → flat, visible strip
+            return [round(0.6, 3)] * bars
+        span = hi - lo
+        return [round(0.06 + 0.94 * max(0.0, min(1.0, (m - lo) / span)), 3)
+                for m in means]
+    except Exception:
+        return []
 
 
 # --------------------------------------------------------------------------
@@ -536,14 +961,21 @@ def render_clip(
     progress: bool = False,
     silence: bool = False,
     loud: bool = False,
+    fmt: str = config.DEFAULT_FORMAT,
 ) -> Path:
     """Cut ``[start, end]`` out of ``src`` into a captioned short.
 
     With ``silence`` the window is cut to a scratch file first, silences are
-    detected, and when at least :data:`MIN_SILENCE_REMOVED` seconds of dead air
-    can go the clip is rebuilt with a trim+concat filtergraph (and the ASS file
-    remapped onto the new timeline). Otherwise — or when nothing meaningful was
-    found — it falls through to the normal single-pass render.
+    detected there (timestamps are already source-window time), and when at
+    least :data:`MIN_SILENCE_REMOVED` seconds of dead air can go the clip is
+    rebuilt with a trim+concat filtergraph (and the ASS file remapped onto the
+    new timeline). Otherwise — or when nothing meaningful was found — it
+    falls through to the normal single-pass render.
+
+    ``style`` ``smart`` tracks the active third of the frame: motion winners
+    are measured on a scaled proxy, remapped through the silence cuts + speed
+    onto the output timeline, and baked into a stepped numeric crop
+    expression. Any analysis failure degrades to a static center crop.
     """
     src = Path(src)
     out = Path(out)
@@ -554,6 +986,12 @@ def render_clip(
         rate = 1.0
     if rate <= 0:
         rate = 1.0
+
+    def smart_plan(keeps: list[tuple[float, float]] | None):
+        if style != "smart" or fmt == "wide":
+            return None
+        return smart_crop_for_window(src, float(start), float(end),
+                                     width, height, keeps, rate)
 
     audio_ok = has_audio(src)
     afilter = audio_filter(rate, loud) if audio_ok else ""
@@ -577,7 +1015,7 @@ def render_clip(
                 graph = build_concat_filter(ranges, speed=rate, audio=audio_ok)
                 graph += ";" + video_chain(
                     style, width, height, mapped_ass, out_dur, progress,
-                    vin="ccv",
+                    vin="ccv", fmt=fmt, smart=smart_plan(ranges), speed=1.0,
                 )
                 audio_label: str | None = None
                 if audio_ok:
@@ -597,7 +1035,8 @@ def render_clip(
 
     # Single pass (also the fallback when silence removal found nothing).
     graph = video_chain(
-        style, width, height, ass_path, window / rate, progress, vin="0:v"
+        style, width, height, ass_path, window / rate, progress, vin="0:v",
+        fmt=fmt, smart=smart_plan([(0.0, window)]), speed=rate,
     )
     args = [
         "-ss", f"{float(start):.3f}",

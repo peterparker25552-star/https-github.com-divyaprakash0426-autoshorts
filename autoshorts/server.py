@@ -1,4 +1,10 @@
-"""FastAPI app: JSON API + static web UI + clip file serving."""
+"""FastAPI app: JSON API + static web UI + clip file serving.
+
+A byte-for-byte mirror of ``server_stdlib.py`` — every request body is
+validated by the same maintenance helpers, so both servers return identical
+status codes and ``{"detail": ...}`` messages. (Termux cannot install
+FastAPI's compiled wheels, which is why the stdlib twin exists.)
+"""
 from __future__ import annotations
 
 import tempfile
@@ -6,11 +12,12 @@ import time
 import zipfile
 from pathlib import Path
 
-from fastapi import Body, FastAPI, HTTPException
-from fastapi.responses import FileResponse
+from fastapi import Body, FastAPI, HTTPException, Request
+from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, Field, field_validator
 from starlette.background import BackgroundTask
+from starlette.exceptions import HTTPException as StarletteHTTPException
+from fastapi.exceptions import RequestValidationError
 
 from . import __version__, config, demo, highlights, llm, maintenance, youtube
 from .maintenance import ServiceError
@@ -19,13 +26,6 @@ from .store import Store
 from .transcripts import Segment, to_sentences
 
 WEB_DIR = Path(__file__).resolve().parent.parent / "web"
-_PROFILE_PATTERN = "^(viral|story|facts|energy)$"
-_STYLE_PATTERN = "^(crop|blur)$"
-_QUALITY_PATTERN = "^(fast|full)$"
-_FORMAT_PATTERN = "^(vertical|square|wide)$"
-_CAPTION_PATTERN = "^(classic|pop|minimal)$"
-_CLEAN_PATTERN = "^(media|subs|thumbs|clips)$"
-_SPEEDS = tuple(config.SPEEDS)
 
 app = FastAPI(title="AutoShorts", version=__version__)
 store = Store()
@@ -39,80 +39,26 @@ def _fail(exc: ServiceError) -> HTTPException:
     return HTTPException(status_code=exc.status, detail=exc.detail)
 
 
+@app.exception_handler(RequestValidationError)
+async def _validation_error(_: Request, exc: RequestValidationError):
+    """Match the stdlib server's plain-string detail for bad bodies."""
+    return JSONResponse(
+        status_code=422,
+        content={"detail": "Invalid JSON body"},
+    )
+
+
+@app.exception_handler(StarletteHTTPException)
+async def _http_error(_: Request, exc: StarletteHTTPException):
+    return JSONResponse(status_code=exc.status_code, content={"detail": exc.detail})
+
+
 def youtube_reachable(ttl: float = 60.0) -> bool:
     global _reachable_cache
     now = time.time()
     if now - _reachable_cache[0] > ttl:
         _reachable_cache = (now, youtube.check_reachable())
     return _reachable_cache[1]
-
-
-# ---------------------------------------------------------------------------
-# Request models
-# ---------------------------------------------------------------------------
-class PlaylistReq(BaseModel):
-    url: str = Field(min_length=8)
-    limit: int = Field(default=config.EPISODE_PAGE_SIZE, ge=1, le=100)
-
-
-class RenderOpts(BaseModel):
-    """The eight v0.3.0 render options, mixed into every job request."""
-
-    style: str = Field(default=config.DEFAULT_STYLE, pattern=_STYLE_PATTERN)
-    quality: str = Field(default=config.DEFAULT_QUALITY, pattern=_QUALITY_PATTERN)
-    format: str = Field(default=config.DEFAULT_FORMAT, pattern=_FORMAT_PATTERN)
-    captions: str = Field(default=config.DEFAULT_CAPTIONS, pattern=_CAPTION_PATTERN)
-    speed: float = Field(default=config.DEFAULT_SPEED, ge=0.5, le=2.0)
-    progress: bool = False
-    silence: bool = False
-    loud: bool = False
-
-    @field_validator("speed")
-    @classmethod
-    def _known_speed(cls, value: float) -> float:
-        if float(value) not in config.SPEEDS:
-            raise ValueError(
-                "speed must be one of: "
-                + ", ".join(str(speed) for speed in config.SPEEDS)
-            )
-        return float(value)
-
-
-class ShortsReq(RenderOpts):
-    count: int = Field(default=config.DEFAULT_CLIP_COUNT, ge=1, le=12)
-    min_dur: float = Field(default=config.MIN_CLIP_SECONDS, ge=8, le=120)
-    max_dur: float = Field(default=config.MAX_CLIP_SECONDS, ge=10, le=180)
-    profile: str = Field(default="viral", pattern=_PROFILE_PATTERN)
-
-
-class PreviewReq(BaseModel):
-    count: int = Field(default=config.DEFAULT_CLIP_COUNT, ge=1, le=12)
-    min_dur: float = Field(default=config.MIN_CLIP_SECONDS, ge=5, le=180)
-    max_dur: float = Field(default=config.MAX_CLIP_SECONDS, ge=5, le=180)
-    profile: str = Field(default="viral", pattern=_PROFILE_PATTERN)
-
-
-class ManualReq(RenderOpts):
-    start: float
-    end: float
-    title: str = Field(default="", max_length=120)
-    profile: str = Field(default="viral", pattern=_PROFILE_PATTERN)
-
-
-class BatchReq(ShortsReq):
-    """The batch endpoint reuses the shorts body verbatim."""
-
-
-class SettingsReq(BaseModel):
-    autopilot: bool
-
-
-class CleanReq(BaseModel):
-    target: str = Field(pattern=_CLEAN_PATTERN)
-
-
-class RerenderReq(RenderOpts):
-    """Every render option is optional here — omitted ones keep the clip's."""
 
 
 # ---------------------------------------------------------------------------
@@ -182,52 +128,22 @@ def state():
 
 
 @app.post("/api/playlist")
-def load_playlist(req: PlaylistReq):
-    if not youtube_reachable():
+def load_url(payload: dict = Body(...)):
+    """Accepts playlists AND single videos (one reachability probe)."""
+    url = payload.get("url", "")
+    if not isinstance(url, str) or len(url) < 8:
+        raise HTTPException(status_code=422, detail="url must be at least 8 characters")
+    limit = payload.get("limit", config.EPISODE_PAGE_SIZE)
+    if isinstance(limit, bool) or not isinstance(limit, int) or not (1 <= limit <= 100):
         raise HTTPException(
-            status_code=503,
-            detail=(
-                "YouTube is not reachable from this machine — "
-                "use Demo mode to try the pipeline on synthetic media, "
-                "or run AutoShorts where YouTube is accessible."
-            ),
+            status_code=422, detail="limit must be an integer between 1 and 100"
         )
     try:
-        entries = youtube.list_playlist(req.url, limit=req.limit)
-    except RuntimeError as exc:
-        raise HTTPException(status_code=502, detail=str(exc)) from exc
-    for entry in entries:
-        store.upsert_episode(
-            {
-                **entry,
-                "source": "youtube",
-                "status": "new",
-                "clips": [],
-                "added_at": time.time(),
-            }
+        return maintenance.ingest_url(
+            store, pipeline, url, limit, youtube_reachable()
         )
-    store.update_settings(
-        playlist_url=req.url,
-        last_loaded=time.time(),
-    )
-
-    # Auto-pilot: queue every freshly added episode with default options.
-    auto_queued = 0
-    if store.settings().get("autopilot"):
-        params = maintenance.default_job_params()
-        for entry in entries:
-            episode = store.get_episode(entry["id"])
-            if not episode or episode.get("status") == "processing":
-                continue
-            if not demo.is_demo(episode) and not youtube_reachable():
-                continue
-            pipeline.start_job(entry["id"], dict(params))
-            auto_queued += 1
-    return {
-        "added": len(entries),
-        "total_episodes": len(store.episodes()),
-        "auto_queued": auto_queued,
-    }
+    except ServiceError as exc:
+        raise _fail(exc) from exc
 
 
 @app.post("/api/demo/load")
@@ -249,11 +165,14 @@ def load_demo():
     return {"added": len(demo.DEMO_EPISODES)}
 
 
-@app.post("/api/episodes/{ep_id}/shorts")
-def generate_shorts(ep_id: str, req: ShortsReq):
+def _get_episode_or_404(ep_id: str) -> dict:
     episode = store.get_episode(ep_id)
     if not episode:
         raise HTTPException(status_code=404, detail="Episode not found")
+    return episode
+
+
+def _guard_ready(episode: dict) -> None:
     if episode.get("status") == "processing":
         raise HTTPException(status_code=409, detail="Already processing this episode")
     if episode.get("source") != "demo" and not youtube_reachable():
@@ -261,17 +180,27 @@ def generate_shorts(ep_id: str, req: ShortsReq):
             status_code=503,
             detail="YouTube is not reachable — demo mode still works.",
         )
-    job = pipeline.start_job(ep_id, req.model_dump())
+
+
+@app.post("/api/episodes/{ep_id}/shorts")
+def generate_shorts(ep_id: str, payload: dict = Body(...)):
+    try:
+        params = maintenance.shorts_params_from(payload)
+    except ServiceError as exc:
+        raise _fail(exc) from exc
+    episode = _get_episode_or_404(ep_id)
+    _guard_ready(episode)
+    job = pipeline.start_job(ep_id, params)
     return {"job_id": job["id"]}
 
 
 @app.post("/api/episodes/{ep_id}/preview")
-def preview_highlights(ep_id: str, req: PreviewReq):
-    episode = store.get_episode(ep_id)
-    if not episode:
-        raise HTTPException(status_code=404, detail="Episode not found")
-    if req.max_dur < req.min_dur:
-        raise HTTPException(status_code=422, detail="max_dur must be >= min_dur")
+def preview_highlights(ep_id: str, payload: dict = Body(...)):
+    try:
+        params = maintenance.preview_params_from(payload)
+    except ServiceError as exc:
+        raise _fail(exc) from exc
+    episode = _get_episode_or_404(ep_id)
     try:
         segments, _source = _episode_segments(episode)
     except Exception as exc:
@@ -279,10 +208,10 @@ def preview_highlights(ep_id: str, req: PreviewReq):
     sentences = to_sentences(segments)
     moments = highlights.find_highlights(
         sentences,
-        count=req.count,
-        min_dur=req.min_dur,
-        max_dur=req.max_dur,
-        profile=req.profile,
+        count=params["count"],
+        min_dur=params["min_dur"],
+        max_dur=params["max_dur"],
+        profile=params["profile"],
     )
     return {
         "moments": [
@@ -293,6 +222,7 @@ def preview_highlights(ep_id: str, req: PreviewReq):
                 "title": moment.title,
                 "score": moment.score,
                 "reasons": moment.reasons,
+                "breakdown": moment.signals,
                 "signals": moment.signals,
             }
             for moment in moments
@@ -302,33 +232,66 @@ def preview_highlights(ep_id: str, req: PreviewReq):
 
 
 @app.post("/api/episodes/{ep_id}/manual")
-def generate_manual(ep_id: str, req: ManualReq):
-    episode = store.get_episode(ep_id)
-    if not episode:
-        raise HTTPException(status_code=404, detail="Episode not found")
-    if req.end - req.start < 5:
-        raise HTTPException(status_code=422, detail="Manual clips must be at least 5 seconds")
-    if episode.get("status") == "processing":
-        raise HTTPException(status_code=409, detail="Already processing this episode")
-    if episode.get("source") != "demo" and not youtube_reachable():
-        raise HTTPException(
-            status_code=503,
-            detail="YouTube is not reachable — demo mode still works.",
-        )
-    job = pipeline.start_job(ep_id, {**req.model_dump(), "kind": "manual"})
+def generate_manual(ep_id: str, payload: dict = Body(...)):
+    try:
+        params = maintenance.manual_params_from(payload)
+    except ServiceError as exc:
+        raise _fail(exc) from exc
+    episode = _get_episode_or_404(ep_id)
+    _guard_ready(episode)
+    job = pipeline.start_job(ep_id, params)
     return {"job_id": job["id"]}
 
 
 @app.get("/api/episodes/{ep_id}/transcript")
 def episode_transcript(ep_id: str):
-    episode = store.get_episode(ep_id)
-    if not episode:
-        raise HTTPException(status_code=404, detail="Episode not found")
+    episode = _get_episode_or_404(ep_id)
     try:
         segments, source = _episode_segments(episode)
         return {"source": source, "segments": [segment.__dict__ for segment in segments]}
     except Exception as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+
+@app.get("/api/episodes/{ep_id}/chapters")
+def episode_chapters(ep_id: str):
+    try:
+        return maintenance.episode_chapters(store, ep_id)
+    except ServiceError as exc:
+        raise _fail(exc) from exc
+
+
+@app.get("/api/episodes/{ep_id}/export")
+def episode_export(ep_id: str, count: str = "5", profile: str = "viral"):
+    try:
+        parsed = int(count)
+    except (TypeError, ValueError):
+        parsed = None
+    if parsed is None:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                f"count must be an integer between {maintenance.COUNT_RANGE[0]} "
+                f"and {maintenance.COUNT_RANGE[1]}"
+            ),
+        )
+    try:
+        filename, text = maintenance.export_csv(store, ep_id, parsed, profile)
+    except ServiceError as exc:
+        raise _fail(exc) from exc
+    return Response(
+        content=text,
+        media_type="text/csv; charset=utf-8",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+@app.delete("/api/episodes/{ep_id}")
+def delete_episode(ep_id: str):
+    try:
+        return maintenance.delete_episode(store, ep_id)
+    except ServiceError as exc:
+        raise _fail(exc) from exc
 
 
 @app.get("/api/clips/zip")
@@ -395,46 +358,6 @@ def clip_thumb(clip_id: str):
     return FileResponse(path, media_type="image/jpeg")
 
 
-# ---------------------------------------------------------------------------
-# Settings, batch, jobs
-# ---------------------------------------------------------------------------
-@app.post("/api/settings")
-def update_settings(req: SettingsReq):
-    return {"settings": store.update_settings(autopilot=req.autopilot)}
-
-
-@app.post("/api/batch")
-def batch_jobs(req: BatchReq):
-    return maintenance.batch_queue(
-        store, pipeline, req.model_dump(), youtube_reachable()
-    )
-
-
-@app.get("/api/jobs")
-def list_jobs(limit: int = 20):
-    limit = max(1, min(int(limit), 200))
-    return {"jobs": store.recent_jobs(limit)}
-
-
-@app.post("/api/jobs/{job_id}/retry")
-def retry_job(job_id: str):
-    try:
-        return maintenance.retry_job(store, pipeline, job_id)
-    except ServiceError as exc:
-        raise _fail(exc) from exc
-
-
-# ---------------------------------------------------------------------------
-# Episode + clip extras
-# ---------------------------------------------------------------------------
-@app.get("/api/episodes/{ep_id}/chapters")
-def episode_chapters(ep_id: str):
-    try:
-        return maintenance.episode_chapters(store, ep_id)
-    except ServiceError as exc:
-        raise _fail(exc) from exc
-
-
 @app.get("/api/clips/{clip_id}/srt")
 def clip_srt_file(clip_id: str):
     try:
@@ -446,11 +369,18 @@ def clip_srt_file(clip_id: str):
     )
 
 
-@app.post("/api/clips/{clip_id}/rerender")
-def rerender_clip(clip_id: str, req: RerenderReq):
-    overrides = req.model_dump(exclude_unset=True)
+@app.post("/api/clips/{clip_id}/rename")
+def rename_clip(clip_id: str, payload: dict = Body(...)):
     try:
-        return maintenance.rerender_clip(store, pipeline, clip_id, overrides)
+        return maintenance.rename_clip(store, clip_id, payload)
+    except ServiceError as exc:
+        raise _fail(exc) from exc
+
+
+@app.post("/api/clips/{clip_id}/rerender")
+def rerender_clip(clip_id: str, payload: dict = Body(...)):
+    try:
+        return maintenance.rerender_clip(store, pipeline, clip_id, payload)
     except ServiceError as exc:
         raise _fail(exc) from exc
 
@@ -464,6 +394,84 @@ def polish_clip(clip_id: str):
 
 
 # ---------------------------------------------------------------------------
+# Settings, search, batch, jobs
+# ---------------------------------------------------------------------------
+@app.post("/api/settings")
+def update_settings(payload: dict = Body(...)):
+    try:
+        return maintenance.update_settings(store, payload)
+    except ServiceError as exc:
+        raise _fail(exc) from exc
+
+
+@app.get("/api/search")
+def search(q: str = ""):
+    try:
+        return maintenance.search_transcripts(store, q)
+    except ServiceError as exc:
+        raise _fail(exc) from exc
+
+
+@app.post("/api/batch")
+def batch_jobs(payload: dict = Body(...)):
+    payload = payload if isinstance(payload, dict) else {}
+    try:
+        maintenance.check_unknown_keys(payload, maintenance.BATCH_KEYS)
+        selector_body = {
+            key: value for key, value in payload.items()
+            if key not in ("urls", "episodes")
+        }
+        if selector_body:
+            params = maintenance.shorts_params_from(selector_body)
+        else:
+            params = maintenance.default_job_params()
+    except ServiceError as exc:
+        raise _fail(exc) from exc
+    urls = payload.get("urls")
+    episodes = payload.get("episodes")
+    if urls is not None and (
+        not isinstance(urls, list) or any(not isinstance(u, str) for u in urls)
+    ):
+        raise HTTPException(status_code=422, detail="urls must be a list of strings")
+    if episodes is not None and (
+        not isinstance(episodes, list)
+        or any(not isinstance(e, str) for e in episodes)
+    ):
+        raise HTTPException(
+            status_code=422, detail="episodes must be a list of strings"
+        )
+    return maintenance.batch_queue(
+        store, pipeline, params, youtube_reachable(), urls=urls, episodes=episodes
+    )
+
+
+@app.get("/api/jobs")
+def list_jobs(limit: str = "20"):
+    try:
+        parsed = int(limit)
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=422, detail="limit must be an integer")
+    parsed = max(1, min(parsed, 200))
+    return {"jobs": store.recent_jobs(parsed)}
+
+
+@app.post("/api/jobs/{job_id}/retry")
+def retry_job(job_id: str):
+    try:
+        return maintenance.retry_job(store, pipeline, job_id)
+    except ServiceError as exc:
+        raise _fail(exc) from exc
+
+
+@app.post("/api/jobs/{job_id}/cancel")
+def cancel_job(job_id: str):
+    try:
+        return maintenance.cancel_job(store, job_id)
+    except ServiceError as exc:
+        raise _fail(exc) from exc
+
+
+# ---------------------------------------------------------------------------
 # Storage + backup
 # ---------------------------------------------------------------------------
 @app.get("/api/storage")
@@ -472,9 +480,15 @@ def storage():
 
 
 @app.post("/api/storage/clean")
-def storage_clean(req: CleanReq):
+def storage_clean(payload: dict = Body(...)):
+    target = payload.get("target")
+    if not isinstance(target, str) or target not in maintenance.CLEAN_TARGETS:
+        raise HTTPException(
+            status_code=422,
+            detail="target must be one of: " + ", ".join(maintenance.CLEAN_TARGETS),
+        )
     try:
-        return maintenance.clean_storage(store, req.target)
+        return maintenance.clean_storage(store, target)
     except ServiceError as exc:
         raise _fail(exc) from exc
 

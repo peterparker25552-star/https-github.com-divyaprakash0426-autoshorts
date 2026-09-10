@@ -710,3 +710,116 @@ footer {
   .job .jstep, .job .jmode { display: none; }
   .sigbar { grid-template-columns: 62px 1fr 28px; }
 }
+
+/* ---------- v0.4.0 additions ---------- */
+
+/* episode sub-row: cutter · chapters · csv · exact range · youtube · delete */
+.subrow {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px dashed var(--line);
+}
+.subrow .spacer { flex: 1; }
+
+/* animated gradient border for the fine-tune box */
+.advopts {
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  transition: border-color .25s ease, box-shadow .25s ease;
+}
+.advopts[open] {
+  border-color: rgba(124, 92, 255, .45);
+  box-shadow: 0 0 0 3px rgba(124, 92, 255, .08);
+}
+
+/* waveform strip on clip cards */
+.wave {
+  display: flex;
+  align-items: flex-end;
+  gap: 2px;
+  height: 26px;
+  margin: 8px 0 2px;
+  padding: 3px 4px;
+  background: rgba(0, 0, 0, .28);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  overflow: hidden;
+}
+.wave span {
+  flex: 1;
+  min-width: 2px;
+  background: linear-gradient(180deg, var(--warn), var(--accent));
+  border-radius: 2px 2px 0 0;
+  opacity: .85;
+  transition: height .3s ease;
+}
+.clip:hover .wave span { opacity: 1; }
+
+/* dashboard job stats line */
+.jobstatline {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+  align-items: center;
+  font-size: 12.5px;
+  color: var(--text);
+  background: linear-gradient(90deg, rgba(47,191,113,.10), rgba(255,84,112,.10), rgba(255,176,32,.10));
+  border: 1px solid var(--line);
+  border-radius: 11px;
+  padding: 9px 12px;
+  margin-bottom: 12px;
+}
+
+/* search modal */
+.searchbar {
+  display: flex;
+  gap: 8px;
+  margin: 10px 0;
+}
+.searchbar input {
+  flex: 1;
+  background: var(--bg2);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  color: var(--text);
+  padding: 9px 12px;
+  font-size: 13px;
+}
+.searchbar input:focus { outline: none; border-color: var(--accent2); }
+
+.tline.clickable { cursor: pointer; }
+.tline.clickable:hover {
+  background: rgba(124, 92, 255, .16);
+  transform: translateX(2px);
+}
+.tline .ttext b {
+  display: block;
+  font-size: 11px;
+  color: var(--accent2);
+  margin-bottom: 2px;
+}
+
+/* search hit animation */
+@keyframes slidein {
+  from { opacity: 0; transform: translateY(6px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+#searchResults .tline { animation: slidein .18s ease both; }
+
+/* spinner for modal loading states */
+.spinner {
+  display: inline-block;
+  width: 16px;
+  height: 16px;
+  border: 2px solid rgba(124, 92, 255, .25);
+  border-top-color: var(--accent2);
+  border-radius: 50%;
+  animation: spin .7s linear infinite;
+  vertical-align: -3px;
+  margin-right: 8px;
+}
+@keyframes spin { to { transform: rotate(360deg); } }

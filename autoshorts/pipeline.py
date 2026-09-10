@@ -2,6 +2,7 @@
 
 Steps stay transcript -> highlights -> media -> render. A single background
 worker processes the queue so render jobs and YouTube requests never fan out.
+Jobs cancelled while still queued are skipped by the worker and never run.
 """
 from __future__ import annotations
 
@@ -11,8 +12,13 @@ import traceback
 import uuid
 from pathlib import Path
 
-from . import config, demo, highlights, titles, youtube
-from .ffmpeg import extract_thumbnail, make_ass, render_clip
+from . import config, demo, highlights, maintenance, titles, youtube
+from .ffmpeg import (
+    extract_thumbnail,
+    loudness_waveform,
+    make_ass,
+    render_clip,
+)
 from .store import Store
 from .transcripts import Segment, segments_for_window, to_sentences
 
@@ -49,10 +55,17 @@ class Pipeline:
         if not job:
             return
         ep_id = job["episode_id"]
+
+        # Cancelled while queued → skip silently; the job keeps its status.
+        if job.get("status") == "cancelled":
+            maintenance.reset_episode_if_idle(self.store, ep_id)
+            return
+
         params = job["params"]
         ep = self.store.get_episode(ep_id)
         if not ep:
             self.store.update_job(job_id, status="error", error="Episode not found")
+            maintenance.reset_episode_if_idle(self.store, ep_id)
             return
         try:
             if params.get("kind") == "manual":
@@ -62,17 +75,24 @@ class Pipeline:
             self.store.update_job(
                 job_id, status="done", progress=1.0, step="done"
             )
-            self.store.update_episode(ep_id, status="done", error=None)
+            self._settle_episode(ep_id, "done")
         except Exception as exc:  # surface readable errors to the UI
             self.store.update_job(
                 job_id, status="error", error=str(exc)[:500], step="error"
             )
-            self.store.update_episode(
-                ep_id, status="error", error=str(exc)[:500]
-            )
+            self._settle_episode(ep_id, "error", message=str(exc)[:500])
             traceback.print_exc()
         finally:
             self.store.prune_jobs()
+
+    def _settle_episode(self, ep_id: str, status: str, message: str = "") -> None:
+        """Only mark the episode finished when no other job is waiting."""
+        if self.store.has_active_jobs(ep_id):
+            self.store.update_episode(ep_id, status="processing")
+            return
+        self.store.update_episode(
+            ep_id, status=status, error=None if status == "done" else message
+        )
 
     @staticmethod
     def _progress(store: Store, job_id: str, step: str, frac: float, msg: str) -> None:
@@ -86,13 +106,13 @@ class Pipeline:
 
     @staticmethod
     def _render_settings(params: dict) -> dict:
-        """Resolve the eight render options a job asked for.
+        """Resolve the render options a job asked for.
 
         Unknown values fall back to the project defaults instead of failing a
         long render; the API layers validate first and return 422 anyway.
         """
         style = str(params.get("style") or config.DEFAULT_STYLE)
-        if style not in ("crop", "blur"):
+        if style not in config.STYLES:
             style = config.DEFAULT_STYLE
         quality = str(params.get("quality") or config.DEFAULT_QUALITY)
         if quality not in config.RENDER_HEIGHTS:
@@ -103,11 +123,17 @@ class Pipeline:
         captions = str(params.get("captions") or config.DEFAULT_CAPTIONS)
         if captions not in config.CAPTION_STYLES:
             captions = config.DEFAULT_CAPTIONS
+        captions_pos = str(
+            params.get("captions_pos") or config.DEFAULT_CAPTIONS_POS
+        )
+        if captions_pos not in config.CAPTION_POSITIONS:
+            captions_pos = config.DEFAULT_CAPTIONS_POS
         try:
             speed = float(params.get("speed", config.DEFAULT_SPEED))
         except (TypeError, ValueError):
             speed = config.DEFAULT_SPEED
-        if speed not in config.SPEEDS:
+        lo, hi = config.SPEED_RANGE
+        if not lo <= speed <= hi:
             speed = config.DEFAULT_SPEED
         width, height = config.OUTPUT_SIZES[fmt][quality]
         return {
@@ -117,6 +143,8 @@ class Pipeline:
             "width": width,
             "height": height,
             "captions": captions,
+            "captions_pos": captions_pos,
+            "captions_box": bool(params.get("captions_box", False)),
             "speed": speed,
             "progress": bool(params.get("progress", False)),
             "silence": bool(params.get("silence", False)),
@@ -273,6 +301,8 @@ class Pipeline:
             play_h=settings["height"],
             caption_style=settings["captions"],
             speed=settings["speed"],
+            pos=settings["captions_pos"],
+            box=settings["captions_box"],
         )
         clip_path = config.CLIPS_DIR / f"{clip_id}.mp4"
         render_clip(
@@ -288,7 +318,15 @@ class Pipeline:
             progress=settings["progress"],
             silence=settings["silence"],
             loud=settings["loud"],
+            fmt=settings["format"],
         )
+
+        # 24 loudness bars for the card UI (empty list on any failure).
+        try:
+            waveform = loudness_waveform(clip_path)
+        except Exception:
+            waveform = []
+
         thumb_path = config.THUMBS_DIR / f"{clip_id}.jpg"
         try:
             extract_thumbnail(clip_path, thumb_path)
@@ -307,6 +345,18 @@ class Pipeline:
             duration,
         )
 
+        render_opts = {
+            "style": settings["style"],
+            "quality": settings["quality"],
+            "format": settings["format"],
+            "captions": settings["captions"],
+            "captions_pos": settings["captions_pos"],
+            "captions_box": settings["captions_box"],
+            "speed": settings["speed"],
+            "progress": settings["progress"],
+            "silence": settings["silence"],
+            "loud": settings["loud"],
+        }
         return self.store.add_clip(
             {
                 "id": clip_id,
@@ -323,6 +373,8 @@ class Pipeline:
                 "style": settings["style"],
                 "format": settings["format"],
                 "captions": settings["captions"],
+                "captions_pos": settings["captions_pos"],
+                "captions_box": settings["captions_box"],
                 "quality": settings["quality"],
                 "speed": settings["speed"],
                 "progress": settings["progress"],
@@ -330,16 +382,8 @@ class Pipeline:
                 "loud": settings["loud"],
                 "width": settings["width"],
                 "height": settings["height"],
-                "render": {
-                    "style": settings["style"],
-                    "quality": settings["quality"],
-                    "format": settings["format"],
-                    "captions": settings["captions"],
-                    "speed": settings["speed"],
-                    "progress": settings["progress"],
-                    "silence": settings["silence"],
-                    "loud": settings["loud"],
-                },
+                "render": dict(render_opts),
+                "waveform": waveform,
                 "file": clip_path.name,
                 "thumb": thumb_path.name if thumb_path else None,
             }
