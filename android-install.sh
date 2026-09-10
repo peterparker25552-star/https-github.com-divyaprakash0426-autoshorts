@@ -28,7 +28,7 @@ rm -rf ~/autoshorts
 git clone -q -b "$REF" "$REPO" ~/autoshorts
 
 echo
-echo ">>> [3/4] Installing AutoShorts dependencies..."
+echo ">>> [3/4] Installing AutoShorts dependencies (quick — pure Python only)..."
 cd ~/autoshorts
 bash install-android.sh
 

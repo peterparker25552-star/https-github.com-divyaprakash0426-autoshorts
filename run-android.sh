@@ -3,7 +3,9 @@
 #   AutoShorts - launcher for ANDROID (run inside Termux)
 # ============================================================
 cd "$(dirname "$0")"
-# install-android.sh uses .venv when Termux supports it, else system Python.
+# System Python is used on Termux (it is already per-app private, and
+# .venv creation fails on some Termux builds). An old .venv from a previous
+# install is still honoured if present.
 if [ -x .venv/bin/python ]; then
   PY=".venv/bin/python"
 elif command -v python >/dev/null 2>&1; then
