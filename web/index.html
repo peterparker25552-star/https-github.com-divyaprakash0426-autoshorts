@@ -2,59 +2,77 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>AutoShorts — podcast → shorts</title>
-<meta name="theme-color" content="#0b0d12">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<meta name="color-scheme" content="dark">
+<title>Qyro — podcast to shorts</title>
+<meta name="description" content="Qyro turns long podcast episodes into captioned vertical shorts, rendered locally with ffmpeg.">
+<meta name="theme-color" content="#0A0A0F">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Qyro">
 <link rel="manifest" href="/static/manifest.webmanifest">
-<link rel="apple-touch-icon" href="/static/icons/icon-192.png">
-<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>✂️</text></svg>">
+<link rel="icon" href="/static/icons/favicon.svg" type="image/svg+xml">
+<link rel="icon" type="image/png" sizes="32x32" href="/static/icons/favicon-32.png">
+<link rel="apple-touch-icon" href="/static/icons/apple-touch-icon.png">
 <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
+<div class="glow" aria-hidden="true"></div>
+
 <header class="topbar">
   <div class="brand">
-    <span class="logo">✂️</span>
-    <div>
-      <h1>Auto<span class="accent">Shorts</span></h1>
-      <p class="tagline">long podcasts → captioned vertical shorts</p>
+    <span class="logo" data-logo="1"></span>
+    <div class="brandtext">
+      <h1>Qyro</h1>
+      <p class="tagline">long podcasts, captioned vertical shorts</p>
     </div>
   </div>
 
   <div class="loader">
-    <input id="playlistUrl" type="url" placeholder="playlist or video URL"
-           spellcheck="false">
-    <button id="loadPlaylist" class="btn primary">Load</button>
-    <button id="loadDemo" class="btn ghost" title="3 offline demo episodes">Demo</button>
-    <button id="processAll" class="btn ghost" title="Generate shorts for every new/errored episode">⚡ Process-all</button>
-    <button id="searchBtn" class="btn ghost" title="Search downloaded transcripts (offline)">🔍 Search</button>
-    <button id="dashBtn" class="btn ghost" title="Storage, jobs, backup">🛠 Dashboard</button>
+    <span class="inputwrap">
+      <span class="ic prefix" data-icon="link" aria-hidden="true"></span>
+      <input id="playlistUrl" type="url" placeholder="playlist or video URL"
+             spellcheck="false" autocomplete="off" enterkeyhint="go">
+    </span>
+    <button id="loadPlaylist" class="btn primary"><span class="ic" data-icon="download"></span>Load</button>
+    <button id="loadDemo" class="btn ghost" title="Load 3 offline demo episodes">Demo</button>
+    <button id="processAll" class="btn ghost" title="Queue every new or failed episode"><span class="ic" data-icon="wand"></span>Process all</button>
+    <button id="searchBtn" class="btn ghost iconpad" title="Search downloaded transcripts"><span class="ic" data-icon="search"></span></button>
+    <button id="toolsBtn" class="btn ghost iconpad" title="Audio beds, title lab, quality"><span class="ic" data-icon="music"></span></button>
+    <button id="settingsBtn" class="btn ghost iconpad" title="Free AI engine and defaults"><span class="ic" data-icon="sliders"></span></button>
+    <button id="dashBtn" class="btn ghost iconpad" title="Storage, jobs, backup"><span class="ic" data-icon="grid"></span></button>
   </div>
 
   <div class="health" id="health"></div>
 </header>
 
-<div id="statstrip" class="statstrip" aria-label="AutoShorts statistics"></div>
+<div id="statstrip" class="statstrip" aria-label="Qyro statistics"></div>
 
 <div class="batchbar" aria-label="Batch controls">
-  <span class="blabel">Batch options</span>
+  <span class="blabel"><span class="ic" data-icon="sliders"></span>Batch options</span>
   <select id="presetSel" class="sortsel" aria-label="Option presets">
     <option value="">— presets —</option>
   </select>
-  <button id="presetSave" class="btn small" title="Save the current options as a preset">💾 Save</button>
-  <button id="presetDelete" class="btn small iconbtn" title="Delete the selected preset">🗑</button>
-  <label class="toggle" title="Auto-queue episodes as soon as a playlist loads">
-    <input id="autopilot" type="checkbox"> auto-pilot
+  <button id="presetSave" class="btn small" title="Save the current options as a preset">Save preset</button>
+  <button id="presetDelete" class="btn small iconbtn" title="Delete the selected preset" aria-label="Delete preset"><span class="ic" data-icon="trash"></span></button>
+  <label class="toggle" title="Queue episodes as soon as a playlist loads">
+    <input id="autopilot" type="checkbox"> <span class="ic" data-icon="zap"></span>auto-pilot
   </label>
-  <label class="toggle" title="Save these options as your per-card defaults">
+  <label class="toggle" title="Keep these options as your per-card defaults">
     <input id="rememberOpts" type="checkbox" checked> remember options
   </label>
+  <span class="hint" id="engineHint"></span>
 </div>
 
 <main class="layout">
   <section class="episodes">
     <div class="panel-head episode-head">
       <h2>Episodes</h2>
-      <input id="episodeSearch" class="search" type="search" placeholder="Search episodes…" aria-label="Search episodes">
+      <span class="inputwrap searchwrap">
+        <span class="ic prefix" data-icon="search"></span>
+        <input id="episodeSearch" class="search" type="search" placeholder="Search episodes" aria-label="Search episodes">
+      </span>
       <span id="episodeCount" class="count-pill"></span>
     </div>
     <div id="episodeList" class="episode-list"></div>
@@ -66,30 +84,34 @@
       <span id="clipCount" class="count-pill"></span>
     </div>
     <div class="toolbar">
-      <input id="clipSearch" class="search" type="search" placeholder="Search clips…" aria-label="Search clips">
+      <span class="inputwrap searchwrap">
+        <span class="ic prefix" data-icon="search"></span>
+        <input id="clipSearch" class="search" type="search" placeholder="Search clips" aria-label="Search clips">
+      </span>
       <select id="clipSort" class="sortsel" aria-label="Sort clips">
         <option value="score">Top score</option>
         <option value="newest">Newest</option>
         <option value="longest">Longest</option>
       </select>
-      <button id="zipBtn" class="btn small">⬇ All (ZIP)</button>
+      <button id="zipBtn" class="btn small"><span class="ic" data-icon="download"></span>All (ZIP)</button>
     </div>
     <div id="shortsGrid" class="shorts-grid"></div>
     <div id="emptyShorts" class="empty">
-      <div class="empty-icon">🎬</div>
+      <div class="empty-icon" data-icon="play"></div>
       <p>No shorts yet. Load a playlist (or <a href="#" id="demoLink">try the demo</a>),
-      then hit <b>Generate</b> on an episode.</p>
+      then press <b>Generate</b> on an episode.</p>
     </div>
   </section>
 </main>
 
 <footer>
-  AutoShorts runs everything locally — yt-dlp for media &amp; captions, a
-  built-in highlight engine, ffmpeg for rendering. Clip responsibly: respect
+  Qyro renders everything on your own device — yt-dlp for media and captions, a
+  built-in highlight engine, ffmpeg for the encode. Clip responsibly: respect
   creators' rights and platform terms.
 </footer>
 
 <div id="modalRoot" class="modal-root" hidden></div>
+<div id="toastRoot" class="toast-root"></div>
 
 <script src="/static/app.js"></script>
 </body>

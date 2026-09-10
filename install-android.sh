@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # ============================================================
-#   AutoShorts - installer for ANDROID (run inside Termux)
+#   Qyro - installer for ANDROID (run inside Termux)
 #   Get Termux from F-Droid: https://f-droid.org/packages/com.termux/
 #
-#   Android uses AutoShorts' built-in pure-Python server, so there
+#   Android uses Qyro's built-in pure-Python server, so there
 #   is NOTHING heavy to compile here — no FastAPI / pydantic / Rust
 #   (those have no wheels for Termux Python and pip cannot install
 #   them). Only yt-dlp (pure Python) is needed for YouTube downloads.

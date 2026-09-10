@@ -1,6 +1,6 @@
 @echo off
 REM ============================================================
-REM   AutoShorts - one-click installer (Windows)
+REM   Qyro - one-click installer (Windows)
 REM ============================================================
 where python >nul 2>nul
 if errorlevel 1 (
@@ -19,7 +19,7 @@ echo Creating a private Python environment...
 python -m venv .venv
 call .venv\Scripts\activate.bat
 
-echo Installing AutoShorts dependencies (this downloads ffmpeg too)...
+echo Installing Qyro dependencies (this downloads ffmpeg too)...
 python -m pip install --upgrade pip >nul
 pip install -r requirements.txt
 if errorlevel 1 (

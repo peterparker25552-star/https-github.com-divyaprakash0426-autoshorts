@@ -474,7 +474,7 @@ class CsvUnitTests(unittest.TestCase):
 
     def test_header_and_rows(self):
         filename, text = maintenance.export_csv(self.store, "demo-chhetri-223", 3, "viral")
-        self.assertEqual(filename, "autoshorts-demo-chhetri-223-moments.csv")
+        self.assertEqual(filename, "qyro-demo-chhetri-223-moments.csv")
         lines = text.strip().splitlines()
         self.assertEqual(lines[0], "start,end,duration,title,score,reasons")
         self.assertGreater(len(lines) - 1, 0)

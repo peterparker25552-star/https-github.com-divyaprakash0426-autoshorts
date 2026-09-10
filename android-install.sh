@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ============================================================
-#   AutoShorts — ONE-CLICK installer for Android/Termux
+#   Qyro — ONE-CLICK installer for Android/Termux
 #
 #   Paste this single line into Termux:
 #   pkg update -y ; pkg install -y curl ; curl -sSL https://raw.githubusercontent.com/peterparker25552-star/https-github.com-divyaprakash0426-autoshorts/main/android-install.sh | bash
@@ -23,12 +23,12 @@ pkg update -y || true
 pkg install -y python ffmpeg git
 
 echo
-echo ">>> [2/4] Downloading AutoShorts..."
+echo ">>> [2/4] Downloading Qyro..."
 rm -rf ~/autoshorts
 git clone -q -b "$REF" "$REPO" ~/autoshorts
 
 echo
-echo ">>> [3/4] Installing AutoShorts dependencies (quick — pure Python only)..."
+echo ">>> [3/4] Installing Qyro dependencies (quick — pure Python only)..."
 cd ~/autoshorts
 bash install-android.sh
 
@@ -45,7 +45,7 @@ cp ~/start-autoshorts.sh ~/bin/autoshorts 2>/dev/null || true
 
 echo
 echo "============================================================"
-echo "  ✅ AutoShorts is installed!"
+echo "  ✅ Qyro v0.5.0 is installed!"
 echo
 echo "  TO START IT (any time):"
 echo "     open Termux and type:  bash ~/start-autoshorts.sh"

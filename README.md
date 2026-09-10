@@ -1,4 +1,10 @@
-# ✂️ AutoShorts
+<p align="center">
+  <img src="web/logo.svg" alt="Qyro" width="88" height="88">
+</p>
+
+# Qyro
+
+*formerly AutoShorts — same repo, same installers, new name.*
 
 Turn long YouTube podcast episodes into **short, captioned, vertical (9:16) clips** — automatically.
 
@@ -10,26 +16,74 @@ playlist URL ──▶ yt-dlp ──▶ transcripts ──▶ highlight engine �
                  captions)                     questions · energy)   burned-in captions)
 ```
 
+## What's new in v0.5.0 — **Qyro**
+
+The project is now called **Qyro** (same repo, same installers, same `autoshorts`
+package name — nothing about how you install or run it changed).
+
+- **A real brand** — the mark is a **Q** whose tail is a play triangle cut out of
+  the ring, drawn in the violet → cyan gradient (`#7C3AED` → `#22D3EE`) on
+  near-black `#0A0A0F`. One geometry, shipped as crisp inline SVG (header,
+  favicon, README), the same shape rasterised for the PWA and Apple touch icons.
+- **New look** — near-black glass UI, 12–16 px radii, gradient primary buttons,
+  page/modal/toast transitions and a **zero-emoji interface**: every control uses
+  a hand-drawn inline SVG icon (play, search, download, sliders, trash, pencil,
+  close, retry, sparkle, music, captions, crop, wand). Mobile-first — 480 px
+  wide phones get full-size touch targets and thumb-reachable modals.
+- **1440p quality** — `quality` now takes `fast` · `full` · `1440p`
+  (vertical 1440×2560, square 1440×1440, wide 2560×1440). The UI labels it
+  *"slow on phone"*; `/file` and `/zip` serve whatever was rendered.
+- **T1 Smart framing (unchanged, still the default for talking heads)** — region
+  motion tracking, hysteresis, a numeric `x(t)` crop expression and a static
+  fallback that always renders.
+- **T2 Caption brands** — **Qyro Pop**, **Qyro Minimal** and **Qyro Neon** are
+  bundles (size, colours, outline, weight, position, box, word-pop timing)
+  applied on top of the base style, with the pop timing burned into the ASS file.
+  `captions_brand: "none"` reproduces v0.4.0 captions byte-for-byte.
+- **T3 Beat sync + audio beds** — beat markers are measured *offline* from
+  ffmpeg's `ebur128` loudness curve (onset peak-picking, no new dependency);
+  **"sync cuts to beats"** snaps moment boundaries onto the nearest marker.
+  Upload your own music (`POST /api/audio`), then render with `audio_track` +
+  `audio_mix: replace` (original muted, track looped, trimmed and loudness
+  matched) or `duck` (voice at 20 % under the track).
+- **T4 Logo remover** — `logo_box` erases a channel bug before framing with
+  `delogo`, or a `boxblur` patch when the box touches a frame edge. Corners are a
+  single preset; `custom` takes frame fractions. Optional: it never fails a short.
+- **T5 Free AI engine** — titles, hashtags and the upload pack run through an
+  engine chain: **offline templates by default**, then optional **Google AI
+  Studio**, **Groq** or any **OpenAI-compatible** endpoint (base URL + key) you
+  put in Settings. Keys are stored server-side, masked in every API response and
+  never logged. Any failure — bad key, offline, junk reply — silently falls back
+  to the offline pack and tells the UI why. Qyro never needs money or an account.
+- **T6 Tool suite** — Audio Extract (`/api/clips/{id}/audio.mp3`, MP3 download),
+  Thumbnail Picker (six frames → tap one to set the poster), Title Lab
+  (`POST /api/titles`, 10 variations + hashtags), Silence Tuner (`silence_noise`,
+  `silence_min` sliders), Clip Inspector (`/api/clips/{id}/probe`) and a Beat map
+  per episode (`/api/episodes/{id}/beats`).
+- **PWA** — manifest, theme colour, maskable icons, `apple-touch-icon` and a
+  root-scoped service worker (network-first, shell-only cache), so *Add to Home
+  screen* gives Qyro its own icon and window on Android and iOS.
+
 ## What's new in v0.4.0 — "Super God Mode"
 
 - **Two servers, one API** — `autoshorts/server_stdlib.py` (pure Python, zero third-party imports — the Termux default: `python -m autoshorts.server_stdlib --port 8000`) and `autoshorts/server.py` (a FastAPI mirror). Same routes, same status codes, same `{"detail": …}` errors.
-- **🎥 Smart framing** — portrait-from-landscape motion tracking: ffmpeg `signalstats` YDIF picks the active left/center/right third every 2 s, hysteresis + calm→center bias keep the crop steady, and the winner positions are baked into a stepped numeric `if(lt(t,…))` crop expression, remapped through silence cuts and speed onto the output timeline. Any analysis failure falls back to a static center crop — renders never break.
-- **Caption upgrades** — `captions_pos` (standard / low), `captions_box` (📦 opaque-box `BorderStyle=3`), and auto-fit that shrinks the font for long words (never below 24px) so 9:16 frames never overflow.
+- **Smart framing** — portrait-from-landscape motion tracking: ffmpeg `signalstats` YDIF picks the active left/center/right third every 2 s, hysteresis + calm→center bias keep the crop steady, and the winner positions are baked into a stepped numeric `if(lt(t,…))` crop expression, remapped through silence cuts and speed onto the output timeline. Any analysis failure falls back to a static center crop — renders never break.
+- **Caption upgrades** — `captions_pos` (standard / low), `captions_box` (opaque-box `BorderStyle=3`), and auto-fit that shrinks the font for long words (never below 24px) so 9:16 frames never overflow.
 - **Styles** — `blur` · `crop` · `fill` · `fit` · `smart`; wide output always plain-scales.
 - **Waveform strips** — 24 ebur128 loudness bars stored per clip and drawn on every card.
 - **Single-video ingest** — the header input now takes playlists *and* single videos (`/api/playlist` returns `kind: video|playlist`); batch flows probe YouTube exactly once.
-- **Job control** — cancel queued jobs (✕ in the dashboard, episodes reset when idle), retry done/failed jobs, CSV export (`/api/episodes/{id}/export`), offline transcript search (`/api/search`), clip rename, episode delete with file cleanup, storage clean for `subs|thumbs|clips` with honest `freed_bytes`.
+- **Job control** — cancel queued jobs (the close button in the dashboard, episodes reset when idle), retry done/failed jobs, CSV export (`/api/episodes/{id}/export`), offline transcript search (`/api/search`), clip rename, episode delete with file cleanup, storage clean for `subs|thumbs|clips` with honest `freed_bytes`.
 - **Speed is a number** — any 0.5–2.0× (booleans are rejected with 422); unknown option keys are rejected with `Unknown options`; yt-dlp's version is read from `yt_dlp.version`, never CLI text.
 
 ## What's new in v0.3.0
 
-- **God-mode render options** — every job now accepts `format` (vertical / square / wide), `captions` (classic / pop / minimal), `speed` (1.0× / 1.1× / 1.25×), a burned-in progress bar, silence jump-cuts and loudness normalisation. Find them under **⚙ Fine-tune** on each episode.
+- **God-mode render options** — every job now accepts `format` (vertical / square / wide), `captions` (classic / pop / minimal), `speed` (1.0× / 1.1× / 1.25×), a burned-in progress bar, silence jump-cuts and loudness normalisation. Find them under **Fine-tune** on each episode.
 - **Signal breakdown** — every preview pick and rendered clip shows the weighted hook / numbers / questions / emotion / superlatives / energy / penalties signals behind its score.
-- **Upload packs** — each clip ships with three titles (punchy · curiosity · SEO), up to 12 hashtags (starting `#shorts`) and a description, all generated offline. Hit **📋 Copy pack** and paste straight into YouTube; **✨ Polish** optionally rewrites it with any OpenAI-compatible endpoint.
+- **Upload packs** — each clip ships with three titles (punchy · curiosity · SEO), up to 12 hashtags (starting `#shorts`) and a description, all generated offline. Hit **Copy pack** and paste straight into YouTube; **Polish** optionally rewrites it with the free engine (v0.5.0: any failure keeps the offline pack instead of erroring).
 - **Transcript cutter** — tap one transcript line for the start, another for the end, and cut exactly that range.
 - **Chapters** — turn an episode's top story moments into paste-ready YouTube chapters (`0:00 Intro`, `12:04 The truth about…`).
 - **SRT sidecars + re-render** — download a clip's captions as `.srt`, or re-render it from the same stored range with new options.
-- **Batch & auto-pilot** — save option presets, queue every new/errored episode with **⚡ All**, or let auto-pilot queue episodes the moment a playlist loads.
+- **Batch & auto-pilot** — save option presets, queue every new/errored episode with **Process all**, or let auto-pilot queue episodes the moment a playlist loads.
 - **Dashboard** — per-folder storage with one-click cleanup, state backup/restore, job history with retry, and python/ffmpeg/yt-dlp version info.
 
 ## What's new in v0.2.0
@@ -76,8 +130,12 @@ bash install-android.sh   # once
 bash run-android.sh       # whenever you want to use the app
 ```
 
-3. Open **http://localhost:8000** in Chrome. In Chrome's ⋮ menu choose
-   **"Add to Home screen"** to install it as an app with its own icon.
+3. Open **http://localhost:8000** in Chrome, then in Chrome's menu (the three
+   dots) choose **"Add to Home screen"** — Qyro installs as its own app with the
+   Q mark icon, a near-black splash and its own window (no browser bar). It is a
+   real PWA: manifest + theme colour + maskable icons + `apple-touch-icon`, and
+   the service worker keeps the shell readable when the server is stopped.
+   On iPhone: open the same URL in Safari and use **Share → Add to Home Screen**.
 4. Rendered shorts land in the `data/clips/` folder inside Termux. To copy
    them to your phone's Downloads:
 
@@ -86,7 +144,7 @@ termux-setup-storage    # once — allow the permission
 cp data/clips/*.mp4 ~/storage/downloads/
 ```
 
-AutoShorts automatically uses Termux's native (ARM) ffmpeg and binds to
+Qyro automatically uses Termux's native (ARM) ffmpeg and binds to
 `0.0.0.0`, so any device on the same Wi-Fi can open the app too.
 
 > **Android uses a built-in pure-Python server** — no FastAPI / pydantic, so
@@ -108,14 +166,15 @@ required for YouTube downloads, and demo mode needs nothing at all.
 
 Then either:
 
-1. **Paste a playlist URL** (pre-filled with the Raj Shamani playlist) and press **Load playlist**, or
-2. Press **⚡ Try demo** — generates 3 episodes of synthetic media with crafted transcripts and runs the *entire real pipeline* (highlight scoring → clipping → captioning → thumbnails). Useful when YouTube is unreachable (e.g. restricted networks) or for a quick tour.
+1. **Paste a playlist URL** (pre-filled with the Raj Shamani playlist) and press **Load**, or
+2. Press **Demo** — generates 3 episodes of synthetic media with crafted transcripts and runs the *entire real pipeline* (highlight scoring → clipping → captioning → thumbnails). Useful when YouTube is unreachable (e.g. restricted networks) or for a quick tour.
 
-Per episode, pick **how many shorts**, a scoring profile (**Viral**, **Story**, **Facts**, or **Energy**), a length, the framing (**blurred background** or **center crop**) and the quality (**720p-class** or **1080p-class**), then hit **Generate**. Under **⚙ Fine-tune** you can also set the **format** (vertical 9:16 · square 1:1 · wide 16:9), **captions** (classic · pop · minimal), **speed** (1.0× / 1.1× / 1.25×), a **progress bar**, **silence jump-cuts** and **loudness** normalisation. Use **Preview picks** to inspect the proposed moments (with their signal breakdown) without a media download, **✂ Transcript cutter** to tap out an exact range, **✂ Manual clip** to type one, or **🔖 Chapters** to get paste-ready description chapters. Each finished short shows its score, its weighted signals, why it was picked (hook, stats, emotion…), an **upload pack**, an inline player, sharing, an `.srt` download and a one-click **Re-render**.
+Per episode, pick **how many shorts**, a scoring profile (**Viral**, **Story**, **Facts**, or **Energy**), a length, the framing (**blurred background** or **center crop**) and the quality (**720p** · **1080p** · **1440p** — the last one is marked
+"slow on phone"), then hit **Generate**. Under **Fine-tune** you can also set the **format** (vertical 9:16 · square 1:1 · wide 16:9), **captions** (classic · pop · minimal), a **caption brand** (Qyro Pop · Qyro Minimal · Qyro Neon), **speed** (0.5–2.0×), a **progress bar**, **silence jump-cuts** with the **silence tuner** sliders, **loudness**, the **logo remover** box (live preview, `delogo` with a `boxblur` fallback), a **music bed** with `replace`/`duck`, and **sync cuts to beats**. Use **Preview** to inspect the proposed moments (with their signal breakdown) without a media download, **Transcript** to tap out an exact range, **Exact range** to type one, **Beats** for the offline beat map, or **Chapters** to get paste-ready description chapters. Each finished short shows its score, its weighted signals, why it was picked (hook, stats, emotion…), an **upload pack** ("Made with Qyro" in its footer), an inline player, sharing, an `.srt` download, a one-click **Re-render**, plus **MP3**, **Thumb**, **Titles** and **Inspect** tools.
 
 ## Rate-limit (HTTP 429) protection
 
-AutoShorts v0.2.0 deliberately trades a little speed for reliable caption fetching:
+Qyro deliberately trades a little speed for reliable caption fetching:
 
 - A thread-safe global pacer keeps every yt-dlp call at least **4 seconds** apart.
 - Caption languages are tried **one per request** (`en`, `hi`, `en-orig`, `en.*`, then `hi.*`) rather than in a burst.
@@ -142,14 +201,21 @@ Optional: set `OPENAI_API_KEY` (+ `OPENAI_BASE_URL`, `OPENAI_MODEL`) in the envi
 
 ## Render options
 
-Every `shorts`, `manual`, `rerender` and `batch` request accepts the same eight
-options. Unknown values are rejected with `422`, and the options are stored on
+Every `shorts`, `manual`, `rerender` and `batch` request accepts the same set of
+options (v0.5.0 added the last seven rows). Unknown values are rejected with `422`, and the options are stored on
 each clip so **Re-render** and **Retry** reproduce exactly what produced it.
 
 | Option | Values | Default | Notes |
 | --- | --- | --- | --- |
 | `style` | `blur`, `crop` | `blur` | framing; ignored when `format=wide` (letterbox wins) |
-| `quality` | `fast`, `full` | `fast` | 720p-class or 1080p-class output |
+| `quality` | `fast`, `full`, `1440p` | `fast` | 720p · 1080p · 1440p (2560-class long edge) |
+| `captions_brand` | `none`, `qyro-pop`, `qyro-minimal`, `qyro-neon` | `none` | caption bundle: size, colours, outline, box, position, word-pop |
+| `logo_box` | `null` or `{preset, size, feather}` / `{preset:"custom", x, y, w, h}` | `null` | erase a channel logo before framing (`delogo`, `boxblur` fallback) |
+| `sync_beats` | `true` / `false` | `false` | move cut boundaries onto the nearest offline beat marker |
+| `audio_track` | id from `POST /api/audio` | `null` | replace the short's soundtrack |
+| `audio_mix` | `replace`, `duck` | `duck` | mute the original, or keep the voice at 20 % under the track |
+| `silence_noise` | `-70` … `-18` (dB) | `-35` | where "silent" starts for jump-cuts |
+| `silence_min` | `0.1` … `2.0` (s) | `0.5` | how long a pause must last to be cut |
 | `format` | `vertical`, `square`, `wide` | `vertical` | 9:16 · 1:1 · 16:9 |
 | `captions` | `classic`, `pop`, `minimal` | `classic` | uppercase chunks · per-word pop · small lower-third |
 | `speed` | `1.0`, `1.1`, `1.25` | `1.0` | audio + video; captions stay in sync |
@@ -163,8 +229,13 @@ each clip so **Re-render** and **Retry** reproduce exactly what produced it.
 | --- | --- |
 | `AUTOSHORTS_DATA` | Data directory (default `./data`) |
 | `AUTOSHORTS_FFMPEG` | Explicit path to an ffmpeg binary |
+| `AUTOSHORTS_PORT` | Port for `run.py` (default `8000`) |
 | `AUTOSHORTS_FONT` | Caption font family (default `DejaVu Sans`) |
-| `OPENAI_API_KEY` / `OPENAI_BASE_URL` / `OPENAI_MODEL` | Optional LLM endpoint |
+| `OPENAI_API_KEY` / `OPENAI_BASE_URL` / `OPENAI_MODEL` | Optional OpenAI-compatible endpoint (the engine's "custom" provider) |
+
+Engine keys are usually set in **Settings** in the UI instead of the environment;
+they are written to `data/state.json` only, masked as `*_set` booleans in every
+API response, and never included in a log line or an error message.
 
 ## API
 
@@ -176,7 +247,17 @@ The web UI is a thin client over a small JSON API:
 | `GET` | `/api/state` | episodes, clips, active jobs, library stats, render defaults |
 | `POST` | `/api/playlist` | `{url, limit}` — ingest playlist metadata (auto-queues when auto-pilot is on) |
 | `POST` | `/api/demo/load` | load the demo episodes |
-| `POST` | `/api/settings` | `{autopilot}` — toggle auto-pilot |
+| `POST` | `/api/settings` | `{autopilot, ai_provider, ai_model, ai_base_url, gemini_key, groq_key, ai_key}` — defaults and the free AI engine (keys are write-only) |
+| `GET` | `/api/state` extras | `engine` (masked provider/model/key status) and `audio_tracks` |
+| `POST` | `/api/audio` | `{name, data_b64}` → `{track_id}` — upload a music bed (base64, ≤40 MB) |
+| `GET` | `/api/audio` · `GET /api/audio/{id}/file` · `DELETE /api/audio/{id}` | list, preview, forget beds |
+| `GET` | `/api/episodes/{id}/beats` | offline beat markers (`?refresh=1` rescans) |
+| `GET` | `/api/episodes/{id}/audio.mp3` | extract an episode's audio as MP3 |
+| `GET` | `/api/clips/{id}/audio.mp3` | extract a clip's audio as MP3 |
+| `GET` | `/api/clips/{id}/probe` | real width/height/fps/codecs/duration/size |
+| `GET` | `/api/clips/{id}/thumb-candidates?n=6` | frames to choose a poster from |
+| `POST` | `/api/clips/{id}/thumb-pick` | `{index}` — make a candidate the clip's thumbnail |
+| `POST` | `/api/titles` | Title Lab: `{text, profile, count}` → 10 titles + hashtags via the engine |
 | `POST` | `/api/episodes/{id}/shorts` | `{count, min_dur, max_dur, profile}` + render options — queue automatic clips |
 | `POST` | `/api/episodes/{id}/preview` | score and return moments (with `signals` and transcript `stats`) without downloading/rendering |
 | `POST` | `/api/episodes/{id}/manual` | `{start, end, title}` + render options — queue an exact range |
@@ -186,10 +267,10 @@ The web UI is a thin client over a small JSON API:
 | `GET` | `/api/jobs?limit=` | recent job history |
 | `POST` | `/api/jobs/{id}/retry` | re-queue a finished job with the same episode + parameters |
 | `GET` | `/api/clips/zip?episode_id=…` | download all or per-episode clips as a ZIP |
-| `GET` | `/api/clips/{id}/file` · `/thumb` | media files |
+| `GET` | `/api/clips/{id}/file` · `/thumb` | media files (`/thumb?index=N` serves candidate N) |
 | `GET` | `/api/clips/{id}/srt` | download the clip's captions as SubRip |
 | `POST` | `/api/clips/{id}/rerender` | re-render the stored range, optionally overriding render options |
-| `POST` | `/api/clips/{id}/polish` | rewrite the upload pack with the configured LLM (503 without a key, 502 on failure) |
+| `POST` | `/api/clips/{id}/polish` | rewrite the upload pack through the engine — 503 only when nothing is configured; any provider failure returns 200 with the offline pack plus a `notice` |
 | `DELETE` | `/api/clips/{id}` | delete a clip |
 | `GET` | `/api/storage` | per-folder sizes, file counts, disk usage |
 | `POST` | `/api/storage/clean` | `{target}` — `media` · `subs` · `thumbs` · `clips` |
@@ -199,5 +280,7 @@ The web UI is a thin client over a small JSON API:
 ## Notes & limits
 
 - **Captions dependency**: automatic highlight picking and previews need a transcript. Manual ranges can still render without captions; local Whisper transcription is a natural future extension.
-- **Sandbox/network**: some hosted environments block YouTube. AutoShorts detects this and points you at demo mode; run it on your own machine for real downloads.
+- **Sandbox/network**: some hosted environments block YouTube. Qyro detects this and points you at demo mode; run it on your own machine for real downloads.
+- **Big renders on a phone**: 1440p is 4× the pixels of 720p. On mid-range ARM it is several times slower per clip; the app warns about it, and quality is per-episode so you can draft at 720p and re-render the keeper at 1440p.
+- **Upload size**: `POST /api/audio` takes base64, so its body limit is ~57 MB (≈ 40 MB of audio). Everything else keeps the 5 MB JSON cap.
 - **Responsibility**: downloading and re-publishing creators' content may be restricted by copyright and platform terms. Use for personal study or with permission.

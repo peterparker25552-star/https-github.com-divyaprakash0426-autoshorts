@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ============================================================
-#   AutoShorts - one-click installer (macOS / Linux)
+#   Qyro - one-click installer (macOS / Linux)          (formerly AutoShorts)
 # ============================================================
 set -e
 cd "$(dirname "$0")"
@@ -17,12 +17,12 @@ fi
 echo "Creating a private Python environment..."
 python3 -m venv .venv
 
-echo "Installing AutoShorts dependencies (this downloads ffmpeg too)..."
+echo "Installing Qyro dependencies (this downloads ffmpeg too)..."
 .venv/bin/python -m pip install --upgrade pip --quiet
 .venv/bin/pip install --quiet -r requirements.txt
 
 echo
 echo "============================================================"
-echo "  Installed! Start the app with:  ./run.sh"
+echo "  Qyro v0.5.0 installed! Start the app with:  ./run.sh"
 echo "  Then open http://localhost:8000 in your browser."
 echo "============================================================"

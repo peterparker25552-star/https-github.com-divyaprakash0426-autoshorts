@@ -1,0 +1,21 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="Qyro">
+  <defs>
+    <linearGradient id="qg" x1="6" y1="4" x2="58" y2="60" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#7C3AED"/>
+      <stop offset="0.55" stop-color="#9D5CF5"/>
+      <stop offset="1" stop-color="#22D3EE"/>
+    </linearGradient>
+    <mask id="qcut">
+      <rect width="64" height="64" fill="#fff"/>
+      <path d="M29.00 31.00 L62.00 47.00 L33.50 68.50 Z" fill="#000"/>
+    </mask>
+  </defs>
+  <rect width="64" height="64" fill="#0A0A0F"/>
+  <g>
+    <g mask="url(#qcut)">
+      <path fill="url(#qg)" d="M6.20 27.00a20.80 20.80 0 1 0 41.60 0a20.80 20.80 0 1 0 -41.60 0 Z"/>
+          <path fill="#000" d="M15.60 27.00a11.40 11.40 0 1 0 22.80 0a11.40 11.40 0 1 0 -22.80 0 Z"/>
+        </g>
+    <path d="M36.00 38.50 L55.00 50.50 L36.00 62.50 Z" fill="url(#qg)"/>
+  </g>
+</svg>
