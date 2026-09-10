@@ -3,7 +3,7 @@
 #   AutoShorts — ONE-CLICK installer for Android/Termux
 #
 #   Paste this single line into Termux:
-#   pkg update -y ; pkg install -y curl ; curl -sSL https://raw.githubusercontent.com/peterparker25552-star/https-github.com-divyaprakash0426-autoshorts/arena/01a0853c-https-github-com-divyaprakash0426-autoshorts/android-install.sh | bash
+#   pkg update -y ; pkg install -y curl ; curl -sSL https://raw.githubusercontent.com/peterparker25552-star/https-github.com-divyaprakash0426-autoshorts/main/android-install.sh | bash
 # ============================================================
 set -e
 
@@ -14,7 +14,7 @@ if [ -z "$TERMUX_VERSION" ]; then
   exit 1
 fi
 
-BRANCH="arena/01a0853c-https-github-com-divyaprakash0426-autoshorts"
+REF="${AUTOSHORTS_REF:-main}"
 REPO="https://github.com/peterparker25552-star/https-github.com-divyaprakash0426-autoshorts.git"
 
 echo
@@ -25,7 +25,7 @@ pkg install -y python ffmpeg git
 echo
 echo ">>> [2/4] Downloading AutoShorts..."
 rm -rf ~/autoshorts
-git clone -q -b "$BRANCH" "$REPO" ~/autoshorts
+git clone -q -b "$REF" "$REPO" ~/autoshorts
 
 echo
 echo ">>> [3/4] Installing AutoShorts dependencies..."

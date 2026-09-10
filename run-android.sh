@@ -3,7 +3,12 @@
 #   AutoShorts - launcher for ANDROID (run inside Termux)
 # ============================================================
 cd "$(dirname "$0")"
-if [ ! -d .venv ]; then
+# install-android.sh uses .venv when Termux supports it, else system Python.
+if [ -x .venv/bin/python ]; then
+  PY=".venv/bin/python"
+elif command -v python >/dev/null 2>&1; then
+  PY="python"
+else
   echo "Please run:  bash install-android.sh   first."
   exit 1
 fi
@@ -17,4 +22,4 @@ echo "  On this phone : http://localhost:8000"
 echo
 echo "  To stop: press Ctrl+C (Volume-Down + C on the keyboard)."
 echo
-exec .venv/bin/python run.py --host 0.0.0.0 --port 8000
+exec "$PY" run.py --host 0.0.0.0 --port 8000
