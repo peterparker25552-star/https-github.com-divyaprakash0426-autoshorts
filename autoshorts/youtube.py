@@ -100,7 +100,7 @@ def check_reachable(timeout: float = 6.0) -> bool:
 
 
 # --------------------------------------------------------------------------
-# Playlist
+# Playlist + single video
 # --------------------------------------------------------------------------
 def list_playlist(playlist_url: str, limit: int = config.EPISODE_PAGE_SIZE) -> list[dict]:
     """Flat-list a playlist (id/title/duration) without downloading media."""
@@ -135,6 +135,32 @@ def list_playlist(playlist_url: str, limit: int = config.EPISODE_PAGE_SIZE) -> l
     if not out:
         raise RuntimeError("Playlist fetched but no videos were found.")
     return out
+
+
+def is_playlist_url(url: str) -> bool:
+    """True when ``url`` clearly points at a playlist (``list=`` / ``/playlist``)."""
+    lowered = str(url or "").lower()
+    return "list=" in lowered or "/playlist" in lowered
+
+
+def fetch_video_meta(video_url: str) -> dict:
+    """Metadata for a single video via ``yt-dlp -J --no-playlist``."""
+    _pace()
+    proc = run_ytdlp(["-J", "--no-playlist", video_url], timeout=180)
+    try:
+        data = json.loads(proc.stdout)
+    except json.JSONDecodeError:
+        raise RuntimeError("Could not parse video data from yt-dlp.")
+    vid = data.get("id")
+    if not vid:
+        raise RuntimeError("Video fetched but no id was returned.")
+    return {
+        "id": vid,
+        "title": data.get("title") or vid,
+        "duration": data.get("duration") or 0,
+        "url": f"https://www.youtube.com/watch?v={vid}",
+        "channel": data.get("channel") or data.get("uploader") or "",
+    }
 
 
 # --------------------------------------------------------------------------

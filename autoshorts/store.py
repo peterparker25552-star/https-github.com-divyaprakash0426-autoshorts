@@ -102,6 +102,23 @@ class Store:
             self._data["episodes"][ep_id]["clips"] = []
             self._save()
 
+    def delete_episode(self, ep_id: str) -> int:
+        """Drop an episode, its clips and its jobs; return how many clips went."""
+        with self._lock:
+            episode = self._data["episodes"].pop(ep_id, None)
+            if episode is None:
+                return 0
+            removed = 0
+            for cid in list(self._data["clips"]):
+                if self._data["clips"][cid]["episode_id"] == ep_id:
+                    del self._data["clips"][cid]
+                    removed += 1
+            for jid in list(self._data["jobs"]):
+                if self._data["jobs"][jid]["episode_id"] == ep_id:
+                    del self._data["jobs"][jid]
+            self._save()
+            return removed
+
     # -- clips -------------------------------------------------------------
     def add_clip(self, clip: dict) -> dict:
         with self._lock:
@@ -193,6 +210,35 @@ class Store:
                 for j in self._data["jobs"].values()
                 if j["status"] in ("queued", "running")
             ]
+
+    def jobs_for_episode(self, ep_id: str) -> list[dict]:
+        with self._lock:
+            return [
+                dict(j) for j in self._data["jobs"].values()
+                if j.get("episode_id") == ep_id
+            ]
+
+    def has_active_jobs(self, ep_id: str) -> bool:
+        with self._lock:
+            return any(
+                j.get("episode_id") == ep_id
+                and j.get("status") in ("queued", "running")
+                for j in self._data["jobs"].values()
+            )
+
+    def cancel_job(self, jid: str) -> dict | None:
+        """Mark a queued job cancelled; None when it cannot be cancelled."""
+        with self._lock:
+            job = self._data["jobs"].get(jid)
+            if not job or job.get("status") != "queued":
+                return None
+            job.update(
+                status="cancelled",
+                step="cancelled",
+                message="Cancelled before it started",
+            )
+            self._save()
+            return dict(job)
 
     def recent_jobs(self, limit: int = 20) -> list[dict]:
         """Newest-first job history (running jobs included)."""

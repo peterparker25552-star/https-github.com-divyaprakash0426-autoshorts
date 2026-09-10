@@ -242,8 +242,9 @@ def _description(
     hashtags: list[str],
 ) -> str:
     lines = [title]
-    if guest:
-        lines.append(f"{guest} — the full moment in {secs} seconds.")
+    # The two contract lines: 🎙 (who/what) and ⏱ (how long).
+    lines.append(f"🎙 {guest if guest else title}")
+    lines.append(f"⏱ {secs}s clip")
     lines.append("")
     blurb = _clip(window, 280)
     if blurb:

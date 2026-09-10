@@ -10,6 +10,17 @@ playlist URL ──▶ yt-dlp ──▶ transcripts ──▶ highlight engine �
                  captions)                     questions · energy)   burned-in captions)
 ```
 
+## What's new in v0.4.0 — "Super God Mode"
+
+- **Two servers, one API** — `autoshorts/server_stdlib.py` (pure Python, zero third-party imports — the Termux default: `python -m autoshorts.server_stdlib --port 8000`) and `autoshorts/server.py` (a FastAPI mirror). Same routes, same status codes, same `{"detail": …}` errors.
+- **🎥 Smart framing** — portrait-from-landscape motion tracking: ffmpeg `signalstats` YDIF picks the active left/center/right third every 2 s, hysteresis + calm→center bias keep the crop steady, and the winner positions are baked into a stepped numeric `if(lt(t,…))` crop expression, remapped through silence cuts and speed onto the output timeline. Any analysis failure falls back to a static center crop — renders never break.
+- **Caption upgrades** — `captions_pos` (standard / low), `captions_box` (📦 opaque-box `BorderStyle=3`), and auto-fit that shrinks the font for long words (never below 24px) so 9:16 frames never overflow.
+- **Styles** — `blur` · `crop` · `fill` · `fit` · `smart`; wide output always plain-scales.
+- **Waveform strips** — 24 ebur128 loudness bars stored per clip and drawn on every card.
+- **Single-video ingest** — the header input now takes playlists *and* single videos (`/api/playlist` returns `kind: video|playlist`); batch flows probe YouTube exactly once.
+- **Job control** — cancel queued jobs (✕ in the dashboard, episodes reset when idle), retry done/failed jobs, CSV export (`/api/episodes/{id}/export`), offline transcript search (`/api/search`), clip rename, episode delete with file cleanup, storage clean for `subs|thumbs|clips` with honest `freed_bytes`.
+- **Speed is a number** — any 0.5–2.0× (booleans are rejected with 422); unknown option keys are rejected with `Unknown options`; yt-dlp's version is read from `yt_dlp.version`, never CLI text.
+
 ## What's new in v0.3.0
 
 - **God-mode render options** — every job now accepts `format` (vertical / square / wide), `captions` (classic / pop / minimal), `speed` (1.0× / 1.1× / 1.25×), a burned-in progress bar, silence jump-cuts and loudness normalisation. Find them under **⚙ Fine-tune** on each episode.

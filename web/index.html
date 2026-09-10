@@ -21,10 +21,12 @@
   </div>
 
   <div class="loader">
-    <input id="playlistUrl" type="url" placeholder="YouTube playlist URL…"
+    <input id="playlistUrl" type="url" placeholder="playlist or video URL"
            spellcheck="false">
-    <button id="loadPlaylist" class="btn primary">Load playlist</button>
-    <button id="loadDemo" class="btn ghost">⚡ Try demo</button>
+    <button id="loadPlaylist" class="btn primary">Load</button>
+    <button id="loadDemo" class="btn ghost" title="3 offline demo episodes">Demo</button>
+    <button id="processAll" class="btn ghost" title="Generate shorts for every new/errored episode">⚡ Process-all</button>
+    <button id="searchBtn" class="btn ghost" title="Search downloaded transcripts (offline)">🔍 Search</button>
     <button id="dashBtn" class="btn ghost" title="Storage, jobs, backup">🛠 Dashboard</button>
   </div>
 
@@ -40,9 +42,11 @@
   </select>
   <button id="presetSave" class="btn small" title="Save the current options as a preset">💾 Save</button>
   <button id="presetDelete" class="btn small iconbtn" title="Delete the selected preset">🗑</button>
-  <button id="processAll" class="btn primary small" title="Generate shorts for every new/errored episode">⚡ All</button>
   <label class="toggle" title="Auto-queue episodes as soon as a playlist loads">
     <input id="autopilot" type="checkbox"> auto-pilot
+  </label>
+  <label class="toggle" title="Save these options as your per-card defaults">
+    <input id="rememberOpts" type="checkbox" checked> remember options
   </label>
 </div>
 

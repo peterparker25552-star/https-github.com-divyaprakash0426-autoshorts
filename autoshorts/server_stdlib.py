@@ -33,9 +33,6 @@ from .transcripts import to_sentences
 
 WEB_DIR = Path(__file__).resolve().parent.parent / "web"
 
-_PROFILES = ("viral", "story", "facts", "energy")
-_STYLES = ("crop", "blur")
-_QUALITIES = ("fast", "full")
 _MAX_BODY = 5_000_000  # 5 MB cap on JSON request bodies
 _JOB_LIMIT = (1, 200)   # GET /api/jobs?limit=
 
@@ -67,65 +64,14 @@ def _episode_segments(ep: dict):
 
 
 # ---------------------------------------------------------------------------
-# Errors + validation (mirrors the pydantic constraints in server.py)
+# Errors + validation (delegates to the shared maintenance validators so both
+# servers reject identical bodies with identical messages)
 # ---------------------------------------------------------------------------
 class ApiError(Exception):
     def __init__(self, status: int, detail: str):
         super().__init__(detail)
         self.status = status
         self.detail = detail
-
-
-def _need_int(body: dict, name: str, default: int, lo: int, hi: int) -> int:
-    v = body.get(name, default)
-    if isinstance(v, bool):
-        raise ApiError(422, f"{name} must be an integer between {lo} and {hi}")
-    if isinstance(v, float):
-        if not v.is_integer():
-            raise ApiError(422, f"{name} must be an integer between {lo} and {hi}")
-        v = int(v)
-    if not isinstance(v, int) or not (lo <= v <= hi):
-        raise ApiError(422, f"{name} must be an integer between {lo} and {hi}")
-    return v
-
-
-def _need_float(body: dict, name: str, default: float, lo: float, hi: float) -> float:
-    v = body.get(name, default)
-    if isinstance(v, bool) or not isinstance(v, (int, float)):
-        raise ApiError(422, f"{name} must be a number between {lo} and {hi}")
-    fv = float(v)
-    if not (lo <= fv <= hi):
-        raise ApiError(422, f"{name} must be a number between {lo} and {hi}")
-    return fv
-
-
-def _need_choice(body: dict, name: str, default: str, choices: tuple[str, ...]) -> str:
-    v = body.get(name, default)
-    if v not in choices:
-        raise ApiError(422, f"{name} must be one of: {', '.join(choices)}")
-    return v
-
-
-def _need_url(body: dict) -> str:
-    v = body.get("url", "")
-    if not isinstance(v, str) or len(v) < 8:
-        raise ApiError(422, "url must be at least 8 characters")
-    return v
-
-
-def _need_bool(body: dict, name: str, default: bool = False) -> bool:
-    v = body.get(name, default)
-    if not isinstance(v, bool):
-        raise ApiError(422, f"{name} must be a boolean")
-    return v
-
-
-def _render_opts(body: dict, base: dict | None = None) -> dict:
-    """Shared v0.3.0 render-option validation (identical to server.py)."""
-    try:
-        return maintenance.render_opts_from(body, base)
-    except ServiceError as exc:
-        raise ApiError(exc.status, exc.detail) from exc
 
 
 def _service(fn, *args, **kwargs):
@@ -191,49 +137,18 @@ def api_state() -> dict:
     }
 
 
-def api_load_playlist(body: dict) -> dict:
-    url = _need_url(body)
-    limit = _need_int(body, "limit", config.EPISODE_PAGE_SIZE, 1, 100)
-    if not youtube_reachable():
-        raise ApiError(
-            503,
-            "YouTube is not reachable from this machine — "
-            "use Demo mode to try the pipeline on synthetic media, "
-            "or run AutoShorts where YouTube is accessible.",
-        )
-    try:
-        entries = youtube.list_playlist(url, limit=limit)
-    except RuntimeError as exc:
-        raise ApiError(502, str(exc)) from exc
-    for entry in entries:
-        store.upsert_episode(
-            {
-                **entry,
-                "source": "youtube",
-                "status": "new",
-                "clips": [],
-                "added_at": time.time(),
-            }
-        )
-    store.update_settings(playlist_url=url, last_loaded=time.time())
-
-    # Auto-pilot: queue every freshly added episode with default options.
-    auto_queued = 0
-    if store.settings().get("autopilot"):
-        params = maintenance.default_job_params()
-        for entry in entries:
-            episode = store.get_episode(entry["id"])
-            if not episode or episode.get("status") == "processing":
-                continue
-            if not demo.is_demo(episode) and not youtube_reachable():
-                continue
-            pipeline.start_job(entry["id"], dict(params))
-            auto_queued += 1
-    return {
-        "added": len(entries),
-        "total_episodes": len(store.episodes()),
-        "auto_queued": auto_queued,
-    }
+def api_load_url(body: dict) -> dict:
+    """POST /api/playlist — accepts playlists AND single videos."""
+    url = body.get("url", "")
+    if not isinstance(url, str) or len(url) < 8:
+        raise ApiError(422, "url must be at least 8 characters")
+    limit = body.get("limit", config.EPISODE_PAGE_SIZE)
+    if isinstance(limit, bool) or not isinstance(limit, int) or not (1 <= limit <= 100):
+        raise ApiError(422, "limit must be an integer between 1 and 100")
+    # ONE reachability probe for the whole request (rule 2).
+    return _service(
+        maintenance.ingest_url, store, pipeline, url, limit, youtube_reachable()
+    )
 
 
 def api_load_demo() -> dict:
@@ -271,13 +186,7 @@ def _guard_ready(episode: dict) -> None:
 def api_generate_shorts(ep_id: str, body: dict) -> dict:
     # Body validation first: FastAPI rejects a bad body (422) before the
     # handler ever sees the episode, so the stdlib server must match.
-    params = {
-        "count": _need_int(body, "count", config.DEFAULT_CLIP_COUNT, 1, 12),
-        "min_dur": _need_float(body, "min_dur", config.MIN_CLIP_SECONDS, 8, 120),
-        "max_dur": _need_float(body, "max_dur", config.MAX_CLIP_SECONDS, 10, 180),
-        "profile": _need_choice(body, "profile", "viral", _PROFILES),
-        **_render_opts(body),
-    }
+    params = _service(maintenance.shorts_params_from, body)
     episode = _get_episode_or_404(ep_id)
     _guard_ready(episode)
     job = pipeline.start_job(ep_id, params)
@@ -285,15 +194,32 @@ def api_generate_shorts(ep_id: str, body: dict) -> dict:
 
 
 def api_batch(body: dict) -> dict:
-    """Queue automatic clips for every new/error episode."""
-    params = {
-        "count": _need_int(body, "count", config.DEFAULT_CLIP_COUNT, 1, 12),
-        "min_dur": _need_float(body, "min_dur", config.MIN_CLIP_SECONDS, 8, 120),
-        "max_dur": _need_float(body, "max_dur", config.MAX_CLIP_SECONDS, 10, 180),
-        "profile": _need_choice(body, "profile", "viral", _PROFILES),
-        **_render_opts(body),
+    """Queue many episodes — ONE reachability probe for the whole call."""
+    body = body if isinstance(body, dict) else {}
+    maintenance.check_unknown_keys(body, maintenance.BATCH_KEYS)
+    selector_body = {
+        key: value for key, value in body.items()
+        if key not in ("urls", "episodes")
     }
-    return maintenance.batch_queue(store, pipeline, params, youtube_reachable())
+    if selector_body:
+        params = _service(maintenance.shorts_params_from, selector_body)
+    else:
+        params = maintenance.default_job_params()
+    urls = body.get("urls")
+    episodes = body.get("episodes")
+    if urls is not None and (
+        not isinstance(urls, list)
+        or any(not isinstance(u, str) for u in urls)
+    ):
+        raise ApiError(422, "urls must be a list of strings")
+    if episodes is not None and (
+        not isinstance(episodes, list)
+        or any(not isinstance(e, str) for e in episodes)
+    ):
+        raise ApiError(422, "episodes must be a list of strings")
+    return maintenance.batch_queue(
+        store, pipeline, params, youtube_reachable(), urls=urls, episodes=episodes
+    )
 
 
 def api_jobs(query: dict) -> dict:
@@ -307,18 +233,42 @@ def api_jobs(query: dict) -> dict:
 
 
 def api_settings(body: dict) -> dict:
-    if "autopilot" not in body:  # pydantic requires it in server.py
-        raise ApiError(422, "autopilot is required")
-    autopilot = _need_bool(body, "autopilot")
-    return {"settings": store.update_settings(autopilot=autopilot)}
+    return _service(maintenance.update_settings, store, body)
 
 
 def api_retry_job(job_id: str) -> dict:
     return _service(maintenance.retry_job, store, pipeline, job_id)
 
 
+def api_cancel_job(job_id: str) -> dict:
+    return _service(maintenance.cancel_job, store, job_id)
+
+
+def api_delete_episode(ep_id: str) -> dict:
+    return _service(maintenance.delete_episode, store, ep_id)
+
+
 def api_chapters(ep_id: str) -> dict:
     return _service(maintenance.episode_chapters, store, ep_id)
+
+
+def api_export(ep_id: str, query: dict) -> tuple[str, str]:
+    """Validate + build the CSV export; returns (filename, csv_text)."""
+    raw_count = (query.get("count") or [str(config.DEFAULT_CLIP_COUNT)])[0]
+    profile = (query.get("profile") or ["viral"])[0]
+    try:
+        count = int(raw_count)
+    except (TypeError, ValueError):
+        raise ApiError(
+            422,
+            f"count must be an integer between {maintenance.COUNT_RANGE[0]} "
+            f"and {maintenance.COUNT_RANGE[1]}",
+        )
+    return _service(maintenance.export_csv, store, ep_id, count, profile)
+
+
+def api_rename(clip_id: str, body: dict) -> dict:
+    return _service(maintenance.rename_clip, store, clip_id, body)
 
 
 def api_rerender(clip_id: str, body: dict) -> dict:
@@ -327,6 +277,11 @@ def api_rerender(clip_id: str, body: dict) -> dict:
 
 def api_polish(clip_id: str) -> dict:
     return _service(maintenance.polish_clip, store, clip_id)
+
+
+def api_search(query: dict) -> dict:
+    q = (query.get("q") or [""])[0]
+    return _service(maintenance.search_transcripts, store, q)
 
 
 def api_storage() -> dict:
@@ -348,13 +303,8 @@ def api_restore(body: dict) -> dict:
 
 
 def api_preview(ep_id: str, body: dict) -> dict:
-    count = _need_int(body, "count", config.DEFAULT_CLIP_COUNT, 1, 12)
-    min_dur = _need_float(body, "min_dur", config.MIN_CLIP_SECONDS, 5, 180)
-    max_dur = _need_float(body, "max_dur", config.MAX_CLIP_SECONDS, 5, 180)
-    profile = _need_choice(body, "profile", "viral", _PROFILES)
+    params = _service(maintenance.preview_params_from, body)
     episode = _get_episode_or_404(ep_id)
-    if max_dur < min_dur:
-        raise ApiError(422, "max_dur must be >= min_dur")
     try:
         segments, _source = _episode_segments(episode)
     except Exception as exc:
@@ -362,10 +312,10 @@ def api_preview(ep_id: str, body: dict) -> dict:
     sentences = to_sentences(segments)
     moments = highlights.find_highlights(
         sentences,
-        count=count,
-        min_dur=min_dur,
-        max_dur=max_dur,
-        profile=profile,
+        count=params["count"],
+        min_dur=params["min_dur"],
+        max_dur=params["max_dur"],
+        profile=params["profile"],
     )
     return {
         "moments": [
@@ -376,6 +326,7 @@ def api_preview(ep_id: str, body: dict) -> dict:
                 "title": moment.title,
                 "score": moment.score,
                 "reasons": moment.reasons,
+                "breakdown": moment.signals,
                 "signals": moment.signals,
             }
             for moment in moments
@@ -385,37 +336,11 @@ def api_preview(ep_id: str, body: dict) -> dict:
 
 
 def api_manual(ep_id: str, body: dict) -> dict:
-    # Body validation first (FastAPI parity), then 404, then the range check.
-    start = body.get("start")
-    end = body.get("end")
-    if (
-        isinstance(start, bool) or not isinstance(start, (int, float))
-        or isinstance(end, bool) or not isinstance(end, (int, float))
-    ):
-        raise ApiError(422, "start and end must be numbers")
-    title = body.get("title", "")
-    if not isinstance(title, str):
-        raise ApiError(422, "title must be a string")
-    if len(title) > 120:
-        raise ApiError(422, "title must be at most 120 characters")
-    profile = _need_choice(body, "profile", "viral", _PROFILES)
-    opts = _render_opts(body)
-
+    # Body validation first (FastAPI parity), then 404, then readiness.
+    params = _service(maintenance.manual_params_from, body)
     episode = _get_episode_or_404(ep_id)
-    if end - start < 5:
-        raise ApiError(422, "Manual clips must be at least 5 seconds")
     _guard_ready(episode)
-    job = pipeline.start_job(
-        ep_id,
-        {
-            "start": float(start),
-            "end": float(end),
-            "title": title,
-            "profile": profile,
-            **opts,
-            "kind": "manual",
-        },
-    )
+    job = pipeline.start_job(ep_id, params)
     return {"job_id": job["id"]}
 
 
@@ -538,7 +463,7 @@ class Handler(BaseHTTPRequestHandler):
         content_type, _ = mimetypes.guess_type(str(target))
         self._serve_file(target, content_type or "application/octet-stream")
 
-    def _serve_zip(self, episode_id: str | None) -> None:
+    def _serve_clip_zip(self, episode_id: str | None) -> None:
         clips = store.clips(episode_id=episode_id)
         files = [
             (clip, config.CLIPS_DIR / clip["file"])
@@ -580,6 +505,18 @@ class Handler(BaseHTTPRequestHandler):
         finally:
             backup_path.unlink(missing_ok=True)
 
+    def _serve_csv(self, filename: str, text: str) -> None:
+        data = text.encode("utf-8")
+        self.send_response(200)
+        self.send_header("Content-Type", "text/csv; charset=utf-8")
+        self.send_header("Content-Length", str(len(data)))
+        self.send_header(
+            "Content-Disposition", f'attachment; filename="{filename}"'
+        )
+        self.end_headers()
+        if self._want_body:
+            self.wfile.write(data)
+
     # -- routing ---------------------------------------------------------
     def do_GET(self) -> None:
         self._dispatch()
@@ -591,6 +528,12 @@ class Handler(BaseHTTPRequestHandler):
         self._dispatch()
 
     def do_DELETE(self) -> None:
+        self._dispatch()
+
+    def do_PUT(self) -> None:
+        self._dispatch()
+
+    def do_PATCH(self) -> None:
         self._dispatch()
 
     def _dispatch(self) -> None:
@@ -651,11 +594,11 @@ class Handler(BaseHTTPRequestHandler):
             self._send_json(api_state())
             return
 
-        # POST /api/playlist
+        # POST /api/playlist (playlists AND single videos)
         if parts == ["playlist"]:
             if method != "POST":
                 raise ApiError(405, "Method not allowed")
-            self._send_json(api_load_playlist(body))
+            self._send_json(api_load_url(body))
             return
 
         # POST /api/demo/load
@@ -679,6 +622,13 @@ class Handler(BaseHTTPRequestHandler):
             self._send_json(api_batch(body))
             return
 
+        # GET /api/search?q=
+        if parts == ["search"]:
+            if method not in ("GET", "HEAD"):
+                raise ApiError(405, "Method not allowed")
+            self._send_json(api_search(query))
+            return
+
         # GET /api/jobs
         if parts == ["jobs"]:
             if method not in ("GET", "HEAD"):
@@ -686,11 +636,14 @@ class Handler(BaseHTTPRequestHandler):
             self._send_json(api_jobs(query))
             return
 
-        # POST /api/jobs/{id}/retry
-        if len(parts) == 3 and parts[0] == "jobs" and parts[2] == "retry":
+        # POST /api/jobs/{id}/retry · /cancel
+        if len(parts) == 3 and parts[0] == "jobs" and parts[2] in ("retry", "cancel"):
             if method != "POST":
                 raise ApiError(405, "Method not allowed")
-            self._send_json(api_retry_job(parts[1]))
+            if parts[2] == "retry":
+                self._send_json(api_retry_job(parts[1]))
+            else:
+                self._send_json(api_cancel_job(parts[1]))
             return
 
         # GET /api/storage · POST /api/storage/clean
@@ -717,10 +670,10 @@ class Handler(BaseHTTPRequestHandler):
             self._send_json(api_restore(body))
             return
 
-        # /api/episodes/{id}/...
-        if len(parts) == 3 and parts[0] == "episodes":
-            ep_id, action = parts[1], parts[2]
-            if action in ("transcript", "chapters"):
+        # /api/episodes/{id}[/{action}]
+        if len(parts) >= 2 and parts[0] == "episodes":
+            ep_id, action = parts[1], (parts[2] if len(parts) == 3 else None)
+            if action in ("transcript", "chapters") and len(parts) == 3:
                 if method not in ("GET", "HEAD"):
                     raise ApiError(405, "Method not allowed")
                 if action == "transcript":
@@ -728,17 +681,25 @@ class Handler(BaseHTTPRequestHandler):
                 else:
                     self._send_json(api_chapters(ep_id))
                 return
-            if method != "POST":
-                raise ApiError(405, "Method not allowed")
-            if action == "shorts":
-                self._send_json(api_generate_shorts(ep_id, body))
+            if action == "export" and len(parts) == 3:
+                if method not in ("GET", "HEAD"):
+                    raise ApiError(405, "Method not allowed")
+                filename, text = api_export(ep_id, query)
+                self._serve_csv(filename, text)
                 return
-            if action == "preview":
-                self._send_json(api_preview(ep_id, body))
+            if action is None and method == "DELETE":
+                self._send_json(api_delete_episode(ep_id))
                 return
-            if action == "manual":
-                self._send_json(api_manual(ep_id, body))
-                return
+            if len(parts) == 3 and method == "POST":
+                if action == "shorts":
+                    self._send_json(api_generate_shorts(ep_id, body))
+                    return
+                if action == "preview":
+                    self._send_json(api_preview(ep_id, body))
+                    return
+                if action == "manual":
+                    self._send_json(api_manual(ep_id, body))
+                    return
             raise ApiError(404, "Not found")
 
         # GET /api/clips/zip
@@ -746,13 +707,16 @@ class Handler(BaseHTTPRequestHandler):
             if method not in ("GET", "HEAD"):
                 raise ApiError(405, "Method not allowed")
             episode_id = query.get("episode_id", [None])[0]
-            self._serve_zip(episode_id)
+            self._serve_clip_zip(episode_id)
             return
 
         # /api/clips/{id}[...]
         if len(parts) >= 2 and parts[0] == "clips":
             clip_id = parts[1]
-            if len(parts) == 2 and method == "DELETE":
+            if len(parts) == 2:
+                # DELETE /api/clips/{id}
+                if method != "DELETE":
+                    raise ApiError(405, "Method not allowed")
                 clip = store.get_clip(clip_id)
                 if not clip:
                     raise ApiError(404, "Clip not found")
@@ -763,24 +727,38 @@ class Handler(BaseHTTPRequestHandler):
                 self._send_json({"deleted": clip_id})
                 return
             if len(parts) == 3:
-                if parts[2] == "srt" and method in ("GET", "HEAD"):
+                action = parts[2]
+                if action == "srt":
+                    if method not in ("GET", "HEAD"):
+                        raise ApiError(405, "Method not allowed")
                     path = _service(maintenance.clip_srt, store, clip_id)
                     self._serve_file(
                         path, "application/x-subrip", f"{clip_id}.srt",
                         attachment=True,
                     )
                     return
-                if parts[2] == "rerender" and method == "POST":
+                if action == "rerender":
+                    if method != "POST":
+                        raise ApiError(405, "Method not allowed")
                     self._send_json(api_rerender(clip_id, body))
                     return
-                if parts[2] == "polish" and method == "POST":
+                if action == "polish":
+                    if method != "POST":
+                        raise ApiError(405, "Method not allowed")
                     self._send_json(api_polish(clip_id))
                     return
-                if parts[2] in ("file", "thumb") and method in ("GET", "HEAD"):
+                if action == "rename":
+                    if method != "POST":
+                        raise ApiError(405, "Method not allowed")
+                    self._send_json(api_rename(clip_id, body))
+                    return
+                if action in ("file", "thumb"):
+                    if method not in ("GET", "HEAD"):
+                        raise ApiError(405, "Method not allowed")
                     clip = store.get_clip(clip_id)
                     if not clip:
                         raise ApiError(404, "Clip not found")
-                    if parts[2] == "file":
+                    if action == "file":
                         path = config.CLIPS_DIR / clip["file"]
                         if not path.exists():
                             raise ApiError(410, "Clip file missing on disk")
