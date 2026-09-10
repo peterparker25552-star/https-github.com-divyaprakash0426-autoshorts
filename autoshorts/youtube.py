@@ -39,6 +39,19 @@ def _pace() -> None:
         _last_call = time.monotonic()
 
 
+def ytdlp_version() -> str:
+    """Return the installed yt-dlp version via ``yt_dlp.version``.
+
+    GLOBAL RULE: never parse CLI text output for this.
+    """
+    try:
+        from yt_dlp import version as ytdlp_version_mod
+
+        return getattr(ytdlp_version_mod, "__version__", "unknown")
+    except Exception:
+        return "unknown"
+
+
 def _ytdlp() -> str | None:
     """Find the yt-dlp executable (module or binary)."""
     if shutil.which("yt-dlp"):
@@ -99,8 +112,14 @@ def check_reachable(timeout: float = 6.0) -> bool:
         return False
 
 
+def is_playlist_url(url: str) -> bool:
+    """Playlists contain ``list=`` or ``/playlist``; everything else is a video."""
+    u = (url or "").lower()
+    return "list=" in u or "/playlist" in u
+
+
 # --------------------------------------------------------------------------
-# Playlist
+# Playlist + single video
 # --------------------------------------------------------------------------
 def list_playlist(playlist_url: str, limit: int = config.EPISODE_PAGE_SIZE) -> list[dict]:
     """Flat-list a playlist (id/title/duration) without downloading media."""
@@ -135,6 +154,30 @@ def list_playlist(playlist_url: str, limit: int = config.EPISODE_PAGE_SIZE) -> l
     if not out:
         raise RuntimeError("Playlist fetched but no videos were found.")
     return out
+
+
+def get_video_info(video_url: str) -> dict:
+    """Fetch metadata for a SINGLE video via ``yt-dlp -J --no-playlist``."""
+    _pace()
+    proc = run_ytdlp(["-J", "--no-playlist", video_url], timeout=120)
+    try:
+        data = json.loads(proc.stdout)
+    except json.JSONDecodeError:
+        raise RuntimeError("Could not parse video data from yt-dlp.")
+    vid = data.get("id")
+    if not vid:
+        raise RuntimeError("yt-dlp returned no video id.")
+    return {
+        "id": vid,
+        "title": data.get("title") or vid,
+        "duration": data.get("duration") or 0,
+        "url": data.get("webpage_url") or f"https://www.youtube.com/watch?v={vid}",
+        "channel": data.get("channel") or data.get("uploader") or "",
+        "chapters": [
+            {"start": float(c.get("start_time") or 0), "title": c.get("title") or f"Chapter {i+1}"}
+            for i, c in enumerate(data.get("chapters") or [])
+        ],
+    }
 
 
 # --------------------------------------------------------------------------

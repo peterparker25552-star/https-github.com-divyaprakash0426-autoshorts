@@ -198,3 +198,44 @@ def segments_for_window(
             Segment(max(s.start, start), min(s.end, end), s.text)
         )
     return out
+
+
+# --------------------------------------------------------------------------
+# SRT output (v0.4.0)
+# --------------------------------------------------------------------------
+def _srt_time(t: float) -> str:
+    t = max(0.0, t)
+    h = int(t // 3600)
+    m = int((t % 3600) // 60)
+    s = int(t % 60)
+    ms = int(round((t - int(t)) * 1000))
+    if ms == 1000:
+        s += 1
+        ms = 0
+    return f"{h:02d}:{m:02d}:{s:02d},{ms:03d}"
+
+
+def segments_to_srt(segments: list[Segment], clip_start: float = 0.0,
+                    speed: float = 1.0) -> str:
+    """Render segments as SRT, rebased to 0 and rescaled by speed."""
+    if speed is None or speed <= 0:
+        speed = 1.0
+    blocks: list[str] = []
+    idx = 1
+    for seg in segments:
+        start = max(seg.start - clip_start, 0.0) / speed
+        end = max(seg.end - clip_start, 0.0) / speed
+        if end <= start:
+            continue
+        text = _clean(seg.text)
+        if not text:
+            continue
+        blocks.append(f"{idx}\n{_srt_time(start)} --> {_srt_time(end)}\n{text}")
+        idx += 1
+    return ("\n\n".join(blocks) + "\n") if blocks else ""
+
+
+def write_srt(segments: list[Segment], out_path: Path,
+              clip_start: float = 0.0, speed: float = 1.0) -> Path:
+    out_path.write_text(segments_to_srt(segments, clip_start, speed), encoding="utf-8")
+    return out_path

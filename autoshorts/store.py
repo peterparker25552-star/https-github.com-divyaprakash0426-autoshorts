@@ -11,17 +11,21 @@ from typing import Any
 from . import config
 
 
+DEFAULT_SETTINGS = {
+    "playlist_url": "",
+    "playlist_title": "",
+    "channel": "",
+    "last_loaded": None,
+    "autopilot": False,
+}
+
+
 class Store:
     def __init__(self, path: Path = config.STATE_FILE):
         self.path = path
         self._lock = threading.RLock()
         self._data: dict[str, Any] = {
-            "settings": {
-                "playlist_url": "",
-                "playlist_title": "",
-                "channel": "",
-                "last_loaded": None,
-            },
+            "settings": dict(DEFAULT_SETTINGS),
             "episodes": {},   # id -> episode dict
             "clips": {},      # clip_id -> clip dict
             "jobs": {},       # job_id -> job dict
@@ -34,8 +38,13 @@ class Store:
             try:
                 raw = json.loads(self.path.read_text(encoding="utf-8"))
                 for k in self._data:
-                    if k in raw:
-                        self._data[k] = raw[k]
+                    if k in raw and isinstance(raw[k], dict):
+                        if k == "settings":
+                            merged = dict(DEFAULT_SETTINGS)
+                            merged.update(raw[k])
+                            self._data[k] = merged
+                        else:
+                            self._data[k] = raw[k]
             except Exception:
                 pass  # start fresh on corrupt state
 
@@ -48,10 +57,35 @@ class Store:
             )
             tmp.replace(self.path)
 
+    def snapshot(self) -> dict:
+        """Return a deep-ish copy of the whole state (for backup)."""
+        with self._lock:
+            return json.loads(json.dumps(self._data, ensure_ascii=False))
+
+    def restore(self, state: dict) -> None:
+        """Replace state after validating shape; raises ValueError when bad."""
+        if not isinstance(state, dict):
+            raise ValueError("state must be an object")
+        for key in ("episodes", "clips", "jobs", "settings"):
+            if key not in state or not isinstance(state[key], dict):
+                raise ValueError(f"state.{key} must be an object")
+        with self._lock:
+            settings = dict(DEFAULT_SETTINGS)
+            settings.update(state["settings"])
+            self._data = {
+                "settings": settings,
+                "episodes": dict(state["episodes"]),
+                "clips": dict(state["clips"]),
+                "jobs": dict(state["jobs"]),
+            }
+            self._save()
+
     # -- settings ----------------------------------------------------------
     def settings(self) -> dict:
         with self._lock:
-            return dict(self._data["settings"])
+            merged = dict(DEFAULT_SETTINGS)
+            merged.update(self._data.get("settings", {}))
+            return merged
 
     def update_settings(self, **kw) -> dict:
         with self._lock:
@@ -63,6 +97,9 @@ class Store:
     def upsert_episode(self, ep: dict) -> dict:
         with self._lock:
             existing = self._data["episodes"].get(ep["id"], {})
+            # preserve clips list unless explicitly overwritten
+            if "clips" not in ep and "clips" in existing:
+                ep = {**ep, "clips": existing["clips"]}
             merged = {**existing, **ep}
             self._data["episodes"][ep["id"]] = merged
             self._save()
@@ -85,13 +122,38 @@ class Store:
                 self._data["episodes"][ep_id].update(kw)
                 self._save()
 
+    def delete_episode(self, ep_id: str) -> tuple[dict, int]:
+        """Remove episode + its clip records. Returns (episode, clips_removed)."""
+        with self._lock:
+            ep = self._data["episodes"].pop(ep_id, None)
+            if not ep:
+                raise KeyError(ep_id)
+            removed = 0
+            for cid in list(self._data["clips"]):
+                if self._data["clips"][cid].get("episode_id") == ep_id:
+                    del self._data["clips"][cid]
+                    removed += 1
+            self._save()
+            return dict(ep), removed
+
     def remove_episode_clips(self, ep_id: str) -> None:
         with self._lock:
             for cid in list(self._data["clips"]):
                 if self._data["clips"][cid]["episode_id"] == ep_id:
                     del self._data["clips"][cid]
-            self._data["episodes"][ep_id]["clips"] = []
+            if ep_id in self._data["episodes"]:
+                self._data["episodes"][ep_id]["clips"] = []
             self._save()
+
+    def episode_is_processing(self, ep_id: str) -> bool:
+        with self._lock:
+            ep = self._data["episodes"].get(ep_id)
+            if ep and ep.get("status") == "processing":
+                return True
+            for j in self._data["jobs"].values():
+                if j.get("episode_id") == ep_id and j.get("status") in ("queued", "running"):
+                    return True
+            return False
 
     # -- clips -------------------------------------------------------------
     def add_clip(self, clip: dict) -> dict:
@@ -112,6 +174,14 @@ class Store:
         with self._lock:
             c = self._data["clips"].get(cid)
             return dict(c) if c else None
+
+    def update_clip(self, cid: str, **kw) -> dict | None:
+        with self._lock:
+            if cid in self._data["clips"]:
+                self._data["clips"][cid].update(kw)
+                self._save()
+                return dict(self._data["clips"][cid])
+            return None
 
     def delete_clip(self, cid: str) -> None:
         with self._lock:
@@ -160,6 +230,13 @@ class Store:
             j = self._data["jobs"].get(jid)
             return dict(j) if j else None
 
+    def jobs(self) -> list[dict]:
+        """All jobs, newest first (for /api/jobs + dashboard)."""
+        with self._lock:
+            all_jobs = [dict(j) for j in self._data["jobs"].values()]
+        all_jobs.sort(key=lambda j: j.get("created", 0), reverse=True)
+        return all_jobs
+
     def active_jobs(self) -> list[dict]:
         with self._lock:
             return [
@@ -167,6 +244,26 @@ class Store:
                 for j in self._data["jobs"].values()
                 if j["status"] in ("queued", "running")
             ]
+
+    def active_jobs_for_episode(self, ep_id: str) -> list[dict]:
+        with self._lock:
+            return [
+                dict(j)
+                for j in self._data["jobs"].values()
+                if j.get("episode_id") == ep_id and j.get("status") in ("queued", "running")
+            ]
+
+    def cancel_job(self, jid: str) -> dict | None:
+        """Mark a queued job cancelled. Returns job or None if unknown."""
+        with self._lock:
+            j = self._data["jobs"].get(jid)
+            if not j:
+                return None
+            j["status"] = "cancelled"
+            j["step"] = "cancelled"
+            j["message"] = "Cancelled"
+            self._save()
+            return dict(j)
 
     def prune_jobs(self, keep: int = 40) -> None:
         with self._lock:

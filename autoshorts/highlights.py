@@ -87,10 +87,22 @@ class Highlight:
     title: str
     reasons: list[str] = field(default_factory=list)
     sentences: list[Sentence] = field(default_factory=list)
+    breakdown: dict = field(default_factory=dict)
 
     @property
     def duration(self) -> float:
         return self.end - self.start
+
+    def to_dict(self) -> dict:
+        return {
+            "start": round(self.start, 2),
+            "end": round(self.end, 2),
+            "duration": round(self.duration, 2),
+            "title": self.title,
+            "score": self.score,
+            "reasons": list(self.reasons),
+            "breakdown": {k: (round(v, 2) if isinstance(v, float) else v) for k, v in self.breakdown.items()},
+        }
 
 
 # --------------------------------------------------------------------------
@@ -188,7 +200,7 @@ def find_highlights(
 
     # Pre-score each sentence once
     per_sentence = [score_sentence(s) for s in sentences]
-    cached: dict[int, dict] = {}
+    cached: dict[int, tuple[float, dict]] = {}
 
     def window_score(i: int, j: int) -> tuple[float, dict]:
         """Score sentences[i..j] inclusive."""
@@ -246,6 +258,7 @@ def find_highlights(
                         title=_pick_title(window),
                         reasons=_window_reasons(agg),
                         sentences=window,
+                        breakdown={k: (round(v, 3) if isinstance(v, float) else int(v)) for k, v in agg.items()},
                     )
                 )
             j += 1
@@ -260,6 +273,7 @@ def find_highlights(
                     title=_pick_title(sentences[i:j]),
                     reasons=_window_reasons(agg),
                     sentences=sentences[i:j],
+                    breakdown={k: (round(v, 3) if isinstance(v, float) else int(v)) for k, v in agg.items()},
                 )
             )
 
@@ -281,6 +295,95 @@ def find_highlights(
     return picked
 
 
-import re as _re  # noqa: E402
+# --------------------------------------------------------------------------
+# Preview stats + chapters + upload pack (v0.4.0)
+# --------------------------------------------------------------------------
+def preview_stats(moments: list[Highlight], profile: str,
+                  sentences: list[Sentence] | None = None) -> dict:
+    """Aggregate stats for the preview endpoint."""
+    scores = [m.score for m in moments]
+    durs = [m.duration for m in moments]
+    return {
+        "count": len(moments),
+        "profile": profile,
+        "avg_score": round(sum(scores) / len(scores), 2) if scores else 0.0,
+        "best_score": max(scores) if scores else 0.0,
+        "avg_duration": round(sum(durs) / len(durs), 2) if durs else 0.0,
+        "sentences": len(sentences or []),
+    }
 
-_TERMINAL_END = _re.compile(r"[.!?…][\"')\]]*$")
+
+def build_chapters(sentences: list[Sentence], max_chapters: int = 8) -> list[dict]:
+    """Derive lightweight chapters from transcript sentences (offline).
+
+    Splits sentences into ~even groups and titles each from its first
+    sentence. Always returns at least one chapter when sentences exist.
+    """
+    if not sentences:
+        return []
+    import math
+    n = len(sentences)
+    # Aim for a chapter every ~4 sentences, capped.
+    per = max(1, math.ceil(n / max(1, max_chapters)))
+    chapters: list[dict] = []
+    for i in range(0, n, per):
+        s = sentences[i]
+        title = re.sub(r"\s+", " ", s.text.strip())
+        if len(title) > 60:
+            title = title[:57].rstrip() + "…"
+        chapters.append({"start": round(s.start, 2), "title": title or f"Part {len(chapters)+1}"})
+        if len(chapters) >= max_chapters:
+            break
+    return chapters
+
+
+_STOPWORDS = frozenset({
+    "the", "a", "an", "and", "or", "but", "in", "on", "of", "to", "for",
+    "with", "is", "are", "was", "were", "you", "your", "this", "that",
+    "from", "they", "them", "his", "her", "our", "out", "about", "into",
+})
+
+
+def build_upload_pack(title: str, episode_title: str = "", duration: float = 0.0,
+                      reasons: list[str] | None = None) -> dict:
+    """Build per-clip upload pack: titles, hashtags, description."""
+    base = (title or "Untitled moment").strip()
+    short_ep = re.sub(r"\s*\(Demo\)\s*", "", episode_title or "").strip()
+    # 3 title variants
+    punchy = base if len(base) <= 70 else base[:67].rstrip() + "…"
+    curiosity = base.rstrip(".!?…")
+    if not curiosity.endswith("?"):
+        curiosity = curiosity + "?"
+    seo_bits = [punchy]
+    if short_ep:
+        # keep SEO title compact
+        guest = short_ep.split("|")[0].split(" On ")[0].strip()
+        seo_bits.append(f"{guest} #shorts" if guest else "#shorts")
+    seo = " | ".join(seo_bits)[:100]
+    titles = [punchy, curiosity[:100], seo]
+
+    # hashtags: derive from title words + evergreen tags, ≤12, always #shorts
+    words = re.findall(r"[A-Za-z]{3,}", base.lower())
+    tags: list[str] = []
+    for w in words:
+        if w in _STOPWORDS:
+            continue
+        tag = "#" + w
+        if tag not in tags:
+            tags.append(tag)
+        if len(tags) >= 7:
+            break
+    for evergreen in ("#shorts", "#podcast", "#viral", "#motivation", "#india", "#success"):
+        if evergreen not in tags:
+            tags.append(evergreen)
+    if "#shorts" not in tags:
+        tags.insert(0, "#shorts")
+    hashtags = tags[:12]
+    if "#shorts" not in hashtags:
+        hashtags = (["#shorts"] + hashtags)[:12]
+
+    dur_txt = f"{duration:.1f}s" if duration else "highlight"
+    ep_line = f"🎙 {short_ep or episode_title or 'AutoShorts'}"
+    time_line = f"⏱ {dur_txt} — {punchy}"
+    description = f"{ep_line}\n{time_line}\n\n{base}\n\n{' '.join(hashtags)}"
+    return {"titles": titles, "hashtags": hashtags, "description": description}

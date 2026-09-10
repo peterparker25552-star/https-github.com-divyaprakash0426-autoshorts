@@ -10,14 +10,14 @@ playlist URL ──▶ yt-dlp ──▶ transcripts ──▶ highlight engine �
                  captions)                     questions · energy)   burned-in captions)
 ```
 
-## What's new in v0.2.0
+## What's new in v0.4.0 "Super God Mode"
 
-- **429-safe YouTube ingestion** — all yt-dlp calls are serialized and paced, subtitle languages are requested one at a time, and HTTP 429 responses get progressive backoff.
-- **Four highlight profiles** — choose **Viral**, **Story**, **Facts**, or **Energy** to change how moments are ranked.
-- **Preview picks** — inspect titles, ranges, scores, and reasons before downloading or rendering media.
-- **Manual clips** — cut any 5–180 second range; cached captions are used when present, but captions are optional.
-- **Serial job queue** — one background worker handles all jobs, reducing load on YouTube and the host machine.
-- **Clip library tools** — episode/clip search, score/date/duration sorting, native sharing, statistics, and one-click ZIP download.
+- **Formats & styles** — vertical / square / wide outputs, blur / crop / fill / fit / 🎥 Smart motion-guided cropping, classic / pop / minimal captions.
+- **Smart render opts everywhere** — speed, silence jump-cuts, loudness norm, progress bar, caption position/box — validated identically on both servers.
+- **Single-video ingest + autopilot** — playlist *or* video URLs, optional auto-queueing, one-shot batch processing.
+- **Clip studio** — rerender with overrides, rename, SRT + thumbnails, waveforms, upload packs (titles/hashtags/descriptions), LLM polish (optional).
+- **Library superpowers** — offline transcript search, chapters, CSV moment exports, jobs dashboard (retry/cancel), storage manager, backup/restore.
+- **v0.2.0 foundations** — 429-safe YouTube ingestion, four highlight profiles (Viral/Story/Facts/Energy), preview picks, manual clips, serial job queue, clip search/sort/share/ZIP.
 
 ## Quick start
 

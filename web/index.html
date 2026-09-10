@@ -21,10 +21,13 @@
   </div>
 
   <div class="loader">
-    <input id="playlistUrl" type="url" placeholder="YouTube playlist URL…"
+    <input id="playlistUrl" type="url" placeholder="playlist or video URL"
            spellcheck="false">
-    <button id="loadPlaylist" class="btn primary">Load playlist</button>
+    <button id="loadPlaylist" class="btn primary">Load</button>
     <button id="loadDemo" class="btn ghost">⚡ Try demo</button>
+    <button id="processAll" class="btn">Process-all</button>
+    <button id="searchBtn" class="btn iconbtn" aria-label="Search transcripts">🔍</button>
+    <button id="dashBtn" class="btn">📊 Dashboard</button>
   </div>
 
   <div class="health" id="health"></div>
@@ -64,6 +67,16 @@
     </div>
   </section>
 </main>
+
+<div id="modalOverlay" class="modal-overlay hidden">
+  <div id="modalBox" class="modal-box" role="dialog" aria-modal="true">
+    <div class="modal-head">
+      <h3 id="modalTitle">Modal</h3>
+      <button id="modalClose" class="btn small iconbtn" aria-label="Close">✕</button>
+    </div>
+    <div id="modalBody" class="modal-body"></div>
+  </div>
+</div>
 
 <footer>
   AutoShorts runs everything locally — yt-dlp for media &amp; captions, a
