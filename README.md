@@ -35,7 +35,16 @@ It opens at <http://localhost:8000> — keep the black window open while using i
 **Android (via Termux):**
 
 1. Install [Termux from F-Droid](https://f-droid.org/packages/com.termux/) (the Play Store build is outdated — don't use it)
-2. In Termux:
+2. Easiest — paste this one line into Termux and wait:
+
+```bash
+pkg update -y ; pkg install -y curl ; curl -sSL https://raw.githubusercontent.com/peterparker25552-star/https-github.com-divyaprakash0426-autoshorts/main/android-install.sh | bash
+```
+
+It installs everything, then start the app any time with
+`bash ~/start-autoshorts.sh`.
+
+Or do it by hand:
 
 ```bash
 pkg update -y && pkg install -y python ffmpeg git
