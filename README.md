@@ -10,6 +10,17 @@ playlist URL ──▶ yt-dlp ──▶ transcripts ──▶ highlight engine �
                  captions)                     questions · energy)   burned-in captions)
 ```
 
+## What's new in v0.3.0
+
+- **God-mode render options** — every job now accepts `format` (vertical / square / wide), `captions` (classic / pop / minimal), `speed` (1.0× / 1.1× / 1.25×), a burned-in progress bar, silence jump-cuts and loudness normalisation. Find them under **⚙ Fine-tune** on each episode.
+- **Signal breakdown** — every preview pick and rendered clip shows the weighted hook / numbers / questions / emotion / superlatives / energy / penalties signals behind its score.
+- **Upload packs** — each clip ships with three titles (punchy · curiosity · SEO), up to 12 hashtags (starting `#shorts`) and a description, all generated offline. Hit **📋 Copy pack** and paste straight into YouTube; **✨ Polish** optionally rewrites it with any OpenAI-compatible endpoint.
+- **Transcript cutter** — tap one transcript line for the start, another for the end, and cut exactly that range.
+- **Chapters** — turn an episode's top story moments into paste-ready YouTube chapters (`0:00 Intro`, `12:04 The truth about…`).
+- **SRT sidecars + re-render** — download a clip's captions as `.srt`, or re-render it from the same stored range with new options.
+- **Batch & auto-pilot** — save option presets, queue every new/errored episode with **⚡ All**, or let auto-pilot queue episodes the moment a playlist loads.
+- **Dashboard** — per-folder storage with one-click cleanup, state backup/restore, job history with retry, and python/ffmpeg/yt-dlp version info.
+
 ## What's new in v0.2.0
 
 - **429-safe YouTube ingestion** — all yt-dlp calls are serialized and paced, subtitle languages are requested one at a time, and HTTP 429 responses get progressive backoff.
@@ -89,7 +100,7 @@ Then either:
 1. **Paste a playlist URL** (pre-filled with the Raj Shamani playlist) and press **Load playlist**, or
 2. Press **⚡ Try demo** — generates 3 episodes of synthetic media with crafted transcripts and runs the *entire real pipeline* (highlight scoring → clipping → captioning → thumbnails). Useful when YouTube is unreachable (e.g. restricted networks) or for a quick tour.
 
-Per episode, pick **how many shorts**, a scoring profile (**Viral**, **Story**, **Facts**, or **Energy**), a length, the framing (**blurred background** or **center crop**) and the quality (**720×1280** or **1080×1920**), then hit **Generate**. Use **Preview picks** to inspect the proposed moments without a media download, or **Manual clip** to cut an exact range. Each finished short shows its score, why it was picked (hook, stats, emotion…), an inline player, sharing, and download controls.
+Per episode, pick **how many shorts**, a scoring profile (**Viral**, **Story**, **Facts**, or **Energy**), a length, the framing (**blurred background** or **center crop**) and the quality (**720p-class** or **1080p-class**), then hit **Generate**. Under **⚙ Fine-tune** you can also set the **format** (vertical 9:16 · square 1:1 · wide 16:9), **captions** (classic · pop · minimal), **speed** (1.0× / 1.1× / 1.25×), a **progress bar**, **silence jump-cuts** and **loudness** normalisation. Use **Preview picks** to inspect the proposed moments (with their signal breakdown) without a media download, **✂ Transcript cutter** to tap out an exact range, **✂ Manual clip** to type one, or **🔖 Chapters** to get paste-ready description chapters. Each finished short shows its score, its weighted signals, why it was picked (hook, stats, emotion…), an **upload pack**, an inline player, sharing, an `.srt` download and a one-click **Re-render**.
 
 ## Rate-limit (HTTP 429) protection
 
@@ -118,6 +129,23 @@ If YouTube still reports a 429, wait **10–15 minutes** before retrying. Avoid 
 
 Optional: set `OPENAI_API_KEY` (+ `OPENAI_BASE_URL`, `OPENAI_MODEL`) in the environment to enable LLM-assisted refinements. The heuristic engine is the default and runs fully offline.
 
+## Render options
+
+Every `shorts`, `manual`, `rerender` and `batch` request accepts the same eight
+options. Unknown values are rejected with `422`, and the options are stored on
+each clip so **Re-render** and **Retry** reproduce exactly what produced it.
+
+| Option | Values | Default | Notes |
+| --- | --- | --- | --- |
+| `style` | `blur`, `crop` | `blur` | framing; ignored when `format=wide` (letterbox wins) |
+| `quality` | `fast`, `full` | `fast` | 720p-class or 1080p-class output |
+| `format` | `vertical`, `square`, `wide` | `vertical` | 9:16 · 1:1 · 16:9 |
+| `captions` | `classic`, `pop`, `minimal` | `classic` | uppercase chunks · per-word pop · small lower-third |
+| `speed` | `1.0`, `1.1`, `1.25` | `1.0` | audio + video; captions stay in sync |
+| `progress` | `true` / `false` | `false` | burned-in bottom progress bar |
+| `silence` | `true` / `false` | `false` | detect pauses ≥0.4 s and jump-cut them out |
+| `loud` | `true` / `false` | `false` | `loudnorm` (≈ -16 LUFS) |
+
 ## Configuration
 
 | Env var | Purpose |
@@ -133,17 +161,29 @@ The web UI is a thin client over a small JSON API:
 
 | Method | Route | Purpose |
 | --- | --- | --- |
-| `GET` | `/api/health` | version, YouTube reachability, ffmpeg path |
-| `GET` | `/api/state` | episodes, clips, active jobs, and library stats |
-| `POST` | `/api/playlist` | `{url, limit}` — ingest playlist metadata |
+| `GET` | `/api/health` | version, YouTube reachability, ffmpeg path, tool versions, disk space, LLM availability |
+| `GET` | `/api/state` | episodes, clips, active jobs, library stats, render defaults |
+| `POST` | `/api/playlist` | `{url, limit}` — ingest playlist metadata (auto-queues when auto-pilot is on) |
 | `POST` | `/api/demo/load` | load the demo episodes |
-| `POST` | `/api/episodes/{id}/shorts` | `{count, min_dur, max_dur, profile, style, quality}` — queue automatic clips |
-| `POST` | `/api/episodes/{id}/preview` | score and return moments without downloading/rendering |
-| `POST` | `/api/episodes/{id}/manual` | `{start, end, title, style, quality}` — queue an exact range |
+| `POST` | `/api/settings` | `{autopilot}` — toggle auto-pilot |
+| `POST` | `/api/episodes/{id}/shorts` | `{count, min_dur, max_dur, profile}` + render options — queue automatic clips |
+| `POST` | `/api/episodes/{id}/preview` | score and return moments (with `signals` and transcript `stats`) without downloading/rendering |
+| `POST` | `/api/episodes/{id}/manual` | `{start, end, title}` + render options — queue an exact range |
 | `GET` | `/api/episodes/{id}/transcript` | parsed transcript segments |
+| `GET` | `/api/episodes/{id}/chapters` | YouTube-style chapters from the top story moments |
+| `POST` | `/api/batch` | queue shorts for every new/errored episode (same body as `/shorts`) |
+| `GET` | `/api/jobs?limit=` | recent job history |
+| `POST` | `/api/jobs/{id}/retry` | re-queue a finished job with the same episode + parameters |
 | `GET` | `/api/clips/zip?episode_id=…` | download all or per-episode clips as a ZIP |
 | `GET` | `/api/clips/{id}/file` · `/thumb` | media files |
+| `GET` | `/api/clips/{id}/srt` | download the clip's captions as SubRip |
+| `POST` | `/api/clips/{id}/rerender` | re-render the stored range, optionally overriding render options |
+| `POST` | `/api/clips/{id}/polish` | rewrite the upload pack with the configured LLM (503 without a key, 502 on failure) |
 | `DELETE` | `/api/clips/{id}` | delete a clip |
+| `GET` | `/api/storage` | per-folder sizes, file counts, disk usage |
+| `POST` | `/api/storage/clean` | `{target}` — `media` · `subs` · `thumbs` · `clips` |
+| `GET` | `/api/backup` | download a full state backup (JSON attachment) |
+| `POST` | `/api/restore` | restore a backup; interrupted jobs come back as retryable errors |
 
 ## Notes & limits
 

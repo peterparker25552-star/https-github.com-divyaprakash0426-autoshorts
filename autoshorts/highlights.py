@@ -87,6 +87,7 @@ class Highlight:
     title: str
     reasons: list[str] = field(default_factory=list)
     sentences: list[Sentence] = field(default_factory=list)
+    signals: dict = field(default_factory=dict)
 
     @property
     def duration(self) -> float:
@@ -135,6 +136,88 @@ def _window_reasons(breakdown: dict) -> list[str]:
     if breakdown["wps"] >= 2.6:
         r.append("high-energy delivery")
     return r
+
+
+# --- signal breakdown --------------------------------------------------------
+# The seven UI-facing signal keys, in display order. Each value is the signal
+# count multiplied by the active profile weight (so it is directly the number
+# of points that signal contributed to the window score).
+SIGNAL_KEYS = (
+    "hook", "numbers", "questions", "emotion", "superlatives", "energy",
+    "penalties",
+)
+
+
+def _signal_breakdown(weights: dict, agg: dict) -> dict:
+    """Weighted, rounded signal contributions for one scored window."""
+    return {
+        "hook": round(weights["hook"] * min(agg["hook"], 3), 2),
+        "numbers": round(weights["numbers"] * min(agg["numbers"], 6), 2),
+        "questions": round(weights["questions"] * min(agg["questions"], 4), 2),
+        "emotion": round(weights["emotion"] * min(agg["emotion"], 5), 2),
+        "superlatives": round(
+            weights["superlative"] * min(agg["superlative"], 4), 2
+        ),
+        "energy": round(weights["wps"] * min(agg["wps"], 4.0), 2),
+        "penalties": round(
+            weights["noise"] * min(agg["noise"], 3)
+            + weights["filler"] * min(agg["filler"], 4),
+            2,
+        ),
+    }
+
+
+def aggregate_signals(sentences: list[Sentence], profile: str = "viral") -> dict:
+    """Signal breakdown for an arbitrary set of sentences (used by manual cuts)."""
+    weights = PROFILES.get(profile, PROFILES["viral"])
+    if not sentences:
+        return {key: 0.0 for key in SIGNAL_KEYS}
+    agg: dict[str, float] = {
+        k: 0 for k in ("hook", "numbers", "questions", "emotion", "superlative",
+                       "noise", "filler")
+    }
+    for sentence in sentences:
+        scores = score_sentence(sentence)
+        for key in agg:
+            agg[key] += scores[key]
+    span = max(sentences[-1].end - sentences[0].start, 0.5)
+    agg["wps"] = sum(len(s.words) for s in sentences) / span
+    return _signal_breakdown(weights, agg)
+
+
+def signals_for_window(
+    sentences: list[Sentence], start: float, end: float, profile: str = "viral"
+) -> dict:
+    """Signals for the sentences overlapping an explicit time window."""
+    inside = [
+        s for s in sentences if s.end > start and s.start < end
+    ]
+    return aggregate_signals(inside, profile)
+
+
+def transcript_stats(sentences: list[Sentence]) -> dict:
+    """Cheap corpus stats shown next to a preview so users can judge a source."""
+    if not sentences:
+        return {
+            "words": 0, "sentences": 0, "questions": 0, "numbers": 0,
+            "hooks": 0, "wpm": 0.0, "span": 0.0,
+        }
+    words = sum(len(s.words) or len(s.text.split()) for s in sentences)
+    span = max(sentences[-1].end - sentences[0].start, 0.0)
+    return {
+        "words": words,
+        "sentences": len(sentences),
+        "questions": sum(
+            1 for s in sentences if _QUESTION_RE.search(s.text)
+        ),
+        "numbers": sum(len(_NUM_RE.findall(s.text)) for s in sentences),
+        "hooks": sum(
+            1 for s in sentences if _count_phrases(s.text, HOOKS)
+        ),
+        "wpm": round(words / span * 60.0, 1) if span > 0 else 0.0,
+        "span": round(span, 2),
+    }
+
 
 
 def _pick_title(sentences: list[Sentence]) -> str:
@@ -246,20 +329,23 @@ def find_highlights(
                         title=_pick_title(window),
                         reasons=_window_reasons(agg),
                         sentences=window,
+                        signals=_signal_breakdown(weights, agg),
                     )
                 )
             j += 1
         # also consider the single best long window even if it exceeds min_dur
         if j - 1 > i and sentences[j - 1].end - sentences[i].start < min_dur:
             score, agg = window_score(i, j - 1)
+            window = sentences[i:j]
             candidates.append(
                 Highlight(
                     start=sentences[i].start,
                     end=sentences[j - 1].end,
                     score=round(score, 2),
-                    title=_pick_title(sentences[i:j]),
+                    title=_pick_title(window),
                     reasons=_window_reasons(agg),
-                    sentences=sentences[i:j],
+                    sentences=window,
+                    signals=_signal_breakdown(weights, agg),
                 )
             )
 
@@ -279,8 +365,3 @@ def find_highlights(
         picked.append(cand)
     picked.sort(key=lambda h: h.start)
     return picked
-
-
-import re as _re  # noqa: E402
-
-_TERMINAL_END = _re.compile(r"[.!?…][\"')\]]*$")

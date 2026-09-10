@@ -10,6 +10,9 @@ from typing import Any
 
 from . import config
 
+# The four top-level keys a state backup must carry.
+STATE_KEYS = ("settings", "episodes", "clips", "jobs")
+
 
 class Store:
     def __init__(self, path: Path = config.STATE_FILE):
@@ -21,6 +24,7 @@ class Store:
                 "playlist_title": "",
                 "channel": "",
                 "last_loaded": None,
+                "autopilot": False,
             },
             "episodes": {},   # id -> episode dict
             "clips": {},      # clip_id -> clip dict
@@ -34,7 +38,12 @@ class Store:
             try:
                 raw = json.loads(self.path.read_text(encoding="utf-8"))
                 for k in self._data:
-                    if k in raw:
+                    if k not in raw:
+                        continue
+                    if k == "settings" and isinstance(raw[k], dict):
+                        # keep newer defaults (e.g. autopilot) on old state files
+                        self._data[k].update(raw[k])
+                    else:
                         self._data[k] = raw[k]
             except Exception:
                 pass  # start fresh on corrupt state
@@ -130,6 +139,23 @@ class Store:
         clips.sort(key=lambda c: c.get("created", 0), reverse=True)
         return clips
 
+    def update_clip(self, cid: str, **kw) -> dict | None:
+        """Patch an existing clip (used by polish + re-render bookkeeping)."""
+        with self._lock:
+            clip = self._data["clips"].get(cid)
+            if not clip:
+                return None
+            clip.update(kw)
+            self._save()
+            return dict(clip)
+
+    def clear_thumb(self, cid: str) -> None:
+        with self._lock:
+            clip = self._data["clips"].get(cid)
+            if clip is not None:
+                clip["thumb"] = None
+                self._save()
+
     # -- jobs --------------------------------------------------------------
     def create_job(self, episode_id: str, params: dict) -> dict:
         with self._lock:
@@ -168,6 +194,13 @@ class Store:
                 if j["status"] in ("queued", "running")
             ]
 
+    def recent_jobs(self, limit: int = 20) -> list[dict]:
+        """Newest-first job history (running jobs included)."""
+        with self._lock:
+            jobs = [dict(j) for j in self._data["jobs"].values()]
+        jobs.sort(key=lambda j: j.get("created") or 0, reverse=True)
+        return jobs[: max(1, int(limit))]
+
     def prune_jobs(self, keep: int = 40) -> None:
         with self._lock:
             jobs = sorted(
@@ -176,3 +209,75 @@ class Store:
             for j in jobs[keep:]:
                 self._data["jobs"].pop(j["id"], None)
             self._save()
+
+    # -- backup / restore --------------------------------------------------
+    def export_state(self) -> dict:
+        """A deep copy of the whole state file (safe to serialise)."""
+        with self._lock:
+            return json.loads(json.dumps(self._data, ensure_ascii=False))
+
+    def import_state(self, data: dict) -> dict:
+        """Replace the state from a backup.
+
+        Requires the four top-level keys; anything that was mid-flight when the
+        backup was taken is parked as an ``error`` ("Interrupted") so it can be
+        retried from the UI instead of hanging forever as "processing".
+        """
+        if not isinstance(data, dict):
+            raise ValueError("State must be a JSON object")
+        missing = [key for key in STATE_KEYS if key not in data]
+        if missing:
+            raise ValueError("Missing state keys: " + ", ".join(missing))
+        for key in ("episodes", "clips", "jobs"):
+            if not isinstance(data[key], dict):
+                raise ValueError(f"'{key}' must be an object")
+        if not isinstance(data["settings"], dict):
+            raise ValueError("'settings' must be an object")
+
+        with self._lock:
+            episodes = {
+                str(ep_id): (ep if isinstance(ep, dict) else {"id": ep_id})
+                for ep_id, ep in data["episodes"].items()
+            }
+            clips = {
+                str(cid): (clip if isinstance(clip, dict) else {"id": cid})
+                for cid, clip in data["clips"].items()
+            }
+            jobs = {
+                str(jid): (job if isinstance(job, dict) else {"id": jid})
+                for jid, job in data["jobs"].items()
+            }
+            interrupted_jobs = 0
+            for job in jobs.values():
+                job.setdefault("id", uuid.uuid4().hex[:12])
+                if job.get("status") in ("queued", "running"):
+                    job.update(
+                        status="error",
+                        step="error",
+                        error="Interrupted",
+                        message="Interrupted by a restore",
+                    )
+                    interrupted_jobs += 1
+            interrupted_episodes = 0
+            for episode in episodes.values():
+                episode.setdefault("id", uuid.uuid4().hex[:12])
+                if episode.get("status") in ("processing", "queued"):
+                    episode.update(status="error", error="Interrupted")
+                    interrupted_episodes += 1
+
+            settings = {**self._data["settings"], **data["settings"]}
+            settings.setdefault("autopilot", False)
+            self._data = {
+                "settings": settings,
+                "episodes": episodes,
+                "clips": clips,
+                "jobs": jobs,
+            }
+            self._save()
+
+        return {
+            "episodes": len(episodes),
+            "clips": len(clips),
+            "jobs": len(jobs),
+            "interrupted": interrupted_episodes + interrupted_jobs,
+        }

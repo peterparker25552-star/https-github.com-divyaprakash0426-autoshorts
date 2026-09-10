@@ -6,13 +6,14 @@ import time
 import zipfile
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException
+from fastapi import Body, FastAPI, HTTPException
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from starlette.background import BackgroundTask
 
-from . import __version__, config, demo, highlights, youtube
+from . import __version__, config, demo, highlights, llm, maintenance, youtube
+from .maintenance import ServiceError
 from .pipeline import Pipeline
 from .store import Store
 from .transcripts import Segment, to_sentences
@@ -21,12 +22,21 @@ WEB_DIR = Path(__file__).resolve().parent.parent / "web"
 _PROFILE_PATTERN = "^(viral|story|facts|energy)$"
 _STYLE_PATTERN = "^(crop|blur)$"
 _QUALITY_PATTERN = "^(fast|full)$"
+_FORMAT_PATTERN = "^(vertical|square|wide)$"
+_CAPTION_PATTERN = "^(classic|pop|minimal)$"
+_CLEAN_PATTERN = "^(media|subs|thumbs|clips)$"
+_SPEEDS = tuple(config.SPEEDS)
 
 app = FastAPI(title="AutoShorts", version=__version__)
 store = Store()
 pipeline = Pipeline(store)
 
 _reachable_cache: tuple[float, bool] = (0.0, False)
+
+
+def _fail(exc: ServiceError) -> HTTPException:
+    """Translate a shared service error into the HTTP error shape."""
+    return HTTPException(status_code=exc.status, detail=exc.detail)
 
 
 def youtube_reachable(ttl: float = 60.0) -> bool:
@@ -45,13 +55,34 @@ class PlaylistReq(BaseModel):
     limit: int = Field(default=config.EPISODE_PAGE_SIZE, ge=1, le=100)
 
 
-class ShortsReq(BaseModel):
+class RenderOpts(BaseModel):
+    """The eight v0.3.0 render options, mixed into every job request."""
+
+    style: str = Field(default=config.DEFAULT_STYLE, pattern=_STYLE_PATTERN)
+    quality: str = Field(default=config.DEFAULT_QUALITY, pattern=_QUALITY_PATTERN)
+    format: str = Field(default=config.DEFAULT_FORMAT, pattern=_FORMAT_PATTERN)
+    captions: str = Field(default=config.DEFAULT_CAPTIONS, pattern=_CAPTION_PATTERN)
+    speed: float = Field(default=config.DEFAULT_SPEED, ge=0.5, le=2.0)
+    progress: bool = False
+    silence: bool = False
+    loud: bool = False
+
+    @field_validator("speed")
+    @classmethod
+    def _known_speed(cls, value: float) -> float:
+        if float(value) not in config.SPEEDS:
+            raise ValueError(
+                "speed must be one of: "
+                + ", ".join(str(speed) for speed in config.SPEEDS)
+            )
+        return float(value)
+
+
+class ShortsReq(RenderOpts):
     count: int = Field(default=config.DEFAULT_CLIP_COUNT, ge=1, le=12)
     min_dur: float = Field(default=config.MIN_CLIP_SECONDS, ge=8, le=120)
     max_dur: float = Field(default=config.MAX_CLIP_SECONDS, ge=10, le=180)
     profile: str = Field(default="viral", pattern=_PROFILE_PATTERN)
-    style: str = Field(default=config.DEFAULT_STYLE, pattern=_STYLE_PATTERN)
-    quality: str = Field(default=config.DEFAULT_QUALITY, pattern=_QUALITY_PATTERN)
 
 
 class PreviewReq(BaseModel):
@@ -61,12 +92,27 @@ class PreviewReq(BaseModel):
     profile: str = Field(default="viral", pattern=_PROFILE_PATTERN)
 
 
-class ManualReq(BaseModel):
+class ManualReq(RenderOpts):
     start: float
     end: float
     title: str = Field(default="", max_length=120)
-    style: str = Field(default=config.DEFAULT_STYLE, pattern=_STYLE_PATTERN)
-    quality: str = Field(default=config.DEFAULT_QUALITY, pattern=_QUALITY_PATTERN)
+    profile: str = Field(default="viral", pattern=_PROFILE_PATTERN)
+
+
+class BatchReq(ShortsReq):
+    """The batch endpoint reuses the shorts body verbatim."""
+
+
+class SettingsReq(BaseModel):
+    autopilot: bool
+
+
+class CleanReq(BaseModel):
+    target: str = Field(pattern=_CLEAN_PATTERN)
+
+
+class RerenderReq(RenderOpts):
+    """Every render option is optional here — omitted ones keep the clip's."""
 
 
 # ---------------------------------------------------------------------------
@@ -83,12 +129,17 @@ def _episode_segments(ep: dict) -> tuple[list[Segment], str]:
 # ---------------------------------------------------------------------------
 @app.get("/api/health")
 def health():
+    disk = maintenance.disk_usage()
     return {
         "app": "autoshorts",
         "version": __version__,
         "youtube_reachable": youtube_reachable(),
         "demo_available": True,
         "ffmpeg": config.FFMPEG_BIN,
+        "versions": maintenance.versions_info(),
+        "disk_free": disk["free"],
+        "disk_total": disk["total"],
+        "llm_available": llm.available(),
     }
 
 
@@ -125,8 +176,7 @@ def state():
             "min_dur": config.MIN_CLIP_SECONDS,
             "max_dur": config.MAX_CLIP_SECONDS,
             "profile": "viral",
-            "style": config.DEFAULT_STYLE,
-            "quality": config.DEFAULT_QUALITY,
+            **maintenance.RENDER_DEFAULTS,
         },
     }
 
@@ -160,7 +210,24 @@ def load_playlist(req: PlaylistReq):
         playlist_url=req.url,
         last_loaded=time.time(),
     )
-    return {"added": len(entries), "total_episodes": len(store.episodes())}
+
+    # Auto-pilot: queue every freshly added episode with default options.
+    auto_queued = 0
+    if store.settings().get("autopilot"):
+        params = maintenance.default_job_params()
+        for entry in entries:
+            episode = store.get_episode(entry["id"])
+            if not episode or episode.get("status") == "processing":
+                continue
+            if not demo.is_demo(episode) and not youtube_reachable():
+                continue
+            pipeline.start_job(entry["id"], dict(params))
+            auto_queued += 1
+    return {
+        "added": len(entries),
+        "total_episodes": len(store.episodes()),
+        "auto_queued": auto_queued,
+    }
 
 
 @app.post("/api/demo/load")
@@ -209,8 +276,9 @@ def preview_highlights(ep_id: str, req: PreviewReq):
         segments, _source = _episode_segments(episode)
     except Exception as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
+    sentences = to_sentences(segments)
     moments = highlights.find_highlights(
-        to_sentences(segments),
+        sentences,
         count=req.count,
         min_dur=req.min_dur,
         max_dur=req.max_dur,
@@ -225,9 +293,11 @@ def preview_highlights(ep_id: str, req: PreviewReq):
                 "title": moment.title,
                 "score": moment.score,
                 "reasons": moment.reasons,
+                "signals": moment.signals,
             }
             for moment in moments
-        ]
+        ],
+        "stats": highlights.transcript_stats(sentences),
     }
 
 
@@ -323,6 +393,114 @@ def clip_thumb(clip_id: str):
     if not path.exists():
         raise HTTPException(status_code=410, detail="Thumbnail missing")
     return FileResponse(path, media_type="image/jpeg")
+
+
+# ---------------------------------------------------------------------------
+# Settings, batch, jobs
+# ---------------------------------------------------------------------------
+@app.post("/api/settings")
+def update_settings(req: SettingsReq):
+    return {"settings": store.update_settings(autopilot=req.autopilot)}
+
+
+@app.post("/api/batch")
+def batch_jobs(req: BatchReq):
+    return maintenance.batch_queue(
+        store, pipeline, req.model_dump(), youtube_reachable()
+    )
+
+
+@app.get("/api/jobs")
+def list_jobs(limit: int = 20):
+    limit = max(1, min(int(limit), 200))
+    return {"jobs": store.recent_jobs(limit)}
+
+
+@app.post("/api/jobs/{job_id}/retry")
+def retry_job(job_id: str):
+    try:
+        return maintenance.retry_job(store, pipeline, job_id)
+    except ServiceError as exc:
+        raise _fail(exc) from exc
+
+
+# ---------------------------------------------------------------------------
+# Episode + clip extras
+# ---------------------------------------------------------------------------
+@app.get("/api/episodes/{ep_id}/chapters")
+def episode_chapters(ep_id: str):
+    try:
+        return maintenance.episode_chapters(store, ep_id)
+    except ServiceError as exc:
+        raise _fail(exc) from exc
+
+
+@app.get("/api/clips/{clip_id}/srt")
+def clip_srt_file(clip_id: str):
+    try:
+        path = maintenance.clip_srt(store, clip_id)
+    except ServiceError as exc:
+        raise _fail(exc) from exc
+    return FileResponse(
+        path, media_type="application/x-subrip", filename=f"{clip_id}.srt"
+    )
+
+
+@app.post("/api/clips/{clip_id}/rerender")
+def rerender_clip(clip_id: str, req: RerenderReq):
+    overrides = req.model_dump(exclude_unset=True)
+    try:
+        return maintenance.rerender_clip(store, pipeline, clip_id, overrides)
+    except ServiceError as exc:
+        raise _fail(exc) from exc
+
+
+@app.post("/api/clips/{clip_id}/polish")
+def polish_clip(clip_id: str):
+    try:
+        return maintenance.polish_clip(store, clip_id)
+    except ServiceError as exc:
+        raise _fail(exc) from exc
+
+
+# ---------------------------------------------------------------------------
+# Storage + backup
+# ---------------------------------------------------------------------------
+@app.get("/api/storage")
+def storage():
+    return maintenance.storage_info(store)
+
+
+@app.post("/api/storage/clean")
+def storage_clean(req: CleanReq):
+    try:
+        return maintenance.clean_storage(store, req.target)
+    except ServiceError as exc:
+        raise _fail(exc) from exc
+
+
+@app.get("/api/backup")
+def backup():
+    with tempfile.NamedTemporaryFile(
+        prefix="autoshorts-backup-", suffix=".json",
+        dir=config.DATA_DIR, delete=False,
+    ) as temporary:
+        backup_path = Path(temporary.name)
+        temporary.write(maintenance.backup_bytes(store))
+    return FileResponse(
+        backup_path,
+        media_type="application/json",
+        filename=f"autoshorts-state-{int(time.time())}.json",
+        background=BackgroundTask(backup_path.unlink, missing_ok=True),
+    )
+
+
+@app.post("/api/restore")
+def restore(payload: dict = Body(...)):
+    try:
+        return maintenance.restore_state(store, payload)
+    except ServiceError as exc:
+        raise _fail(exc) from exc
 
 
 # ---------------------------------------------------------------------------
