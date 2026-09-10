@@ -67,12 +67,13 @@ class WorkerFixture(unittest.TestCase):
 
 
 class HealthAndStateTests(WorkerFixture):
-    def test_health_version_040(self):
+    def test_health_version_050(self):
         resp = self.client.get("/api/health")
         self.assertEqual(resp.status_code, 200)
         body = resp.json()
-        self.assertEqual(body["version"], "0.4.0")
-        self.assertEqual(body["app"], "autoshorts")
+        self.assertEqual(body["version"], "0.5.0")
+        self.assertEqual(body["app"], "Qyro")
+        self.assertEqual(body["brand"], "Qyro")
         self.assertIn("ffmpeg", body)
         self.assertIn("versions", body)
         self.assertIn("yt_dlp", body["versions"])
@@ -320,7 +321,7 @@ class TranscriptChaptersExportTests(WorkerFixture):
         self.assertEqual(resp.status_code, 200)
         self.assertIn("text/csv", resp.headers["content-type"])
         self.assertIn(
-            "autoshorts-demo-chhetri-223-moments.csv",
+            "qyro-demo-chhetri-223-moments.csv",
             resp.headers["content-disposition"],
         )
         lines = resp.text.strip().splitlines()
@@ -663,7 +664,8 @@ class StaticUITests(WorkerFixture):
     def test_index_served(self):
         resp = self.client.get("/")
         self.assertEqual(resp.status_code, 200)
-        self.assertIn("AutoShorts", resp.text)
+        self.assertIn("Qyro", resp.text)
+        self.assertNotIn("AutoShorts", resp.text)
 
     def test_static_served(self):
         self.assertEqual(self.client.get("/static/app.js").status_code, 200)

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""AutoShorts launcher: `python run.py [--host 0.0.0.0] [--port 8000] [--demo]`"""
+"""Qyro launcher: `python run.py [--host 0.0.0.0] [--port 8000] [--demo]`"""
 from __future__ import annotations
 
 import argparse
@@ -19,7 +19,11 @@ def _pick_server(mode: str) -> str:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="AutoShorts server")
+    from autoshorts import __version__
+
+    parser = argparse.ArgumentParser(
+        description=f"Qyro {__version__} server"
+    )
     parser.add_argument("--host", default="0.0.0.0")
     parser.add_argument("--port", type=int, default=8000)
     parser.add_argument(
@@ -60,7 +64,7 @@ def main() -> None:
     if backend == "fastapi":
         import uvicorn
 
-        print(f"AutoShorts UI → http://{args.host}:{args.port}")
+        print(f"Qyro UI → http://{args.host}:{args.port}")
         uvicorn.run(
             "autoshorts.server:app", host=args.host, port=args.port, log_level="info"
         )

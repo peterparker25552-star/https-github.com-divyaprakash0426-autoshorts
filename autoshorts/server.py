@@ -19,7 +19,8 @@ from starlette.background import BackgroundTask
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from fastapi.exceptions import RequestValidationError
 
-from . import __version__, config, demo, highlights, llm, maintenance, youtube
+from . import (__version__, config, demo, engine, highlights, llm, maintenance,
+               youtube)
 from .maintenance import ServiceError
 from .pipeline import Pipeline
 from .store import Store
@@ -27,7 +28,14 @@ from .transcripts import Segment, to_sentences
 
 WEB_DIR = Path(__file__).resolve().parent.parent / "web"
 
-app = FastAPI(title="AutoShorts", version=__version__)
+app = FastAPI(
+    title=f"{config.APP_NAME} API",
+    version=__version__,
+    description=(
+        f"{config.APP_NAME} — turn long podcast episodes into captioned "
+        "vertical shorts. Same JSON contract as the stdlib server."
+    ),
+)
 store = Store()
 pipeline = Pipeline(store)
 
@@ -77,7 +85,8 @@ def _episode_segments(ep: dict) -> tuple[list[Segment], str]:
 def health():
     disk = maintenance.disk_usage()
     return {
-        "app": "autoshorts",
+        "app": config.APP_NAME,
+        "brand": config.APP_NAME,
         "version": __version__,
         "youtube_reachable": youtube_reachable(),
         "demo_available": True,
@@ -85,7 +94,8 @@ def health():
         "versions": maintenance.versions_info(),
         "disk_free": disk["free"],
         "disk_total": disk["total"],
-        "llm_available": llm.available(),
+        "llm_available": bool(engine.available(store.settings()) or llm.available()),
+        "engine": engine.public_state(store.settings()),
     }
 
 
@@ -106,7 +116,7 @@ def state():
         if clips else 0.0
     )
     return {
-        "settings": store.settings(),
+        "settings": maintenance.public_settings(store),
         "episodes": episodes,
         "clips": clips,
         "jobs": list(jobs.values()),
@@ -124,6 +134,8 @@ def state():
             "profile": "viral",
             **maintenance.RENDER_DEFAULTS,
         },
+        "engine": maintenance.engine_settings(store),
+        "audio_tracks": maintenance.audio_tracks()["tracks"],
     }
 
 
@@ -243,6 +255,73 @@ def generate_manual(ep_id: str, payload: dict = Body(...)):
     return {"job_id": job["id"]}
 
 
+@app.post("/api/audio")
+def audio_upload(payload: dict = Body(...)):
+    """Upload a music bed: ``{name, data_b64}`` -> ``{track_id}`` (T3)."""
+    try:
+        return maintenance.audio_upload(store, payload)
+    except ServiceError as exc:
+        raise _fail(exc) from exc
+
+
+@app.get("/api/audio")
+def audio_list():
+    """Uploaded tracks a render may use as ``audio_track``."""
+    return maintenance.audio_tracks()
+
+
+@app.get("/api/audio/{track_id}/file")
+def audio_file(track_id: str):
+    """Stream one stored bed back to the UI's preview player."""
+    try:
+        path = maintenance.audio_track_file(track_id)
+    except ServiceError as exc:
+        raise _fail(exc) from exc
+    return FileResponse(path, media_type="audio/mpeg")
+
+
+@app.delete("/api/audio/{track_id}")
+def audio_delete(track_id: str):
+    """Forget an uploaded bed (T3)."""
+    try:
+        return maintenance.audio_delete(track_id)
+    except ServiceError as exc:
+        raise _fail(exc) from exc
+
+
+@app.post("/api/titles")
+def titles_lab(payload: dict = Body(...)):
+    """Title Lab — title variations + hashtags through the free engine (T6)."""
+    try:
+        return maintenance.title_lab(store, payload)
+    except ServiceError as exc:
+        raise _fail(exc) from exc
+
+
+@app.get("/api/episodes/{ep_id}/beats")
+def episode_beats(ep_id: str, refresh: str = "0"):
+    """Offline beat markers for an episode's media (T3 Beat Sync)."""
+    try:
+        return maintenance.episode_beats(
+            store, ep_id, refresh in ("1", "true", "yes")
+        )
+    except ServiceError as exc:
+        raise _fail(exc) from exc
+
+
+@app.get("/api/episodes/{ep_id}/audio.mp3")
+def episode_audio(ep_id: str):
+    """Extract an episode's media audio as MP3 (T6 Audio Extract)."""
+    try:
+        path, name = maintenance.extract_mp3(store, ep_id)
+    except ServiceError as exc:
+        raise _fail(exc) from exc
+    return FileResponse(
+        path, media_type="audio/mpeg", filename=name,
+        headers={"Content-Disposition": f'attachment; filename="{name}"'},
+    )
+
+
 @app.get("/api/episodes/{ep_id}/transcript")
 def episode_transcript(ep_id: str):
     episode = _get_episode_or_404(ep_id)
@@ -307,14 +386,14 @@ def clips_zip(episode_id: str | None = None):
 
     stamp = int(time.time())
     suffix = f"-{episode_id}" if episode_id else ""
-    download_name = f"autoshorts{suffix}-{stamp}.zip"
+    download_name = f"qyro{suffix}-{stamp}.zip"
     with tempfile.NamedTemporaryFile(
         prefix="autoshorts-", suffix=".zip", dir=config.DATA_DIR, delete=False
     ) as temporary:
         zip_path = Path(temporary.name)
     with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_STORED) as archive:
         for clip, path in files:
-            archive.write(path, arcname=f"autoshort-{clip['id']}.mp4")
+            archive.write(path, arcname=f"qyro-{clip['id']}.mp4")
 
     return FileResponse(
         zip_path,
@@ -344,18 +423,76 @@ def clip_file(clip_id: str):
     path = config.CLIPS_DIR / clip["file"]
     if not path.exists():
         raise HTTPException(status_code=410, detail="Clip file missing on disk")
-    return FileResponse(path, media_type="video/mp4", filename=f"autoshort-{clip_id}.mp4")
+    return FileResponse(path, media_type="video/mp4", filename=f"qyro-{clip_id}.mp4")
 
 
 @app.get("/api/clips/{clip_id}/thumb")
-def clip_thumb(clip_id: str):
+def clip_thumb(clip_id: str, index: int | None = None):
     clip = store.get_clip(clip_id)
-    if not clip or not clip.get("thumb"):
+    if clip is None:
+        raise HTTPException(status_code=404, detail="Clip not found")
+    if index is not None:
+        # v0.5.0 thumb picker: ?index=N serves a candidate frame
+        if index < 0 or index >= config.THUMB_CANDIDATES[1]:
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    "index must be between 0 and "
+                    f"{config.THUMB_CANDIDATES[1] - 1}"
+                ),
+            )
+        path = config.THUMBS_DIR / f"{clip_id}-cand-{index}.jpg"
+        if not path.is_file():
+            raise HTTPException(
+                status_code=404, detail="No candidate at that index"
+            )
+        return FileResponse(path, media_type="image/jpeg")
+    if not clip.get("thumb"):
         raise HTTPException(status_code=404, detail="No thumbnail")
     path = config.THUMBS_DIR / clip["thumb"]
     if not path.exists():
         raise HTTPException(status_code=410, detail="Thumbnail missing")
     return FileResponse(path, media_type="image/jpeg")
+
+
+@app.get("/api/clips/{clip_id}/probe")
+def clip_probe(clip_id: str):
+    """Clip Inspector — real resolution/fps/codec/duration/size (T6)."""
+    try:
+        return maintenance.clip_probe(store, clip_id)
+    except ServiceError as exc:
+        raise _fail(exc) from exc
+
+
+@app.get("/api/clips/{clip_id}/audio.mp3")
+def clip_audio(clip_id: str):
+    """Audio Extract — the clip's soundtrack as a downloadable MP3 (T6)."""
+    try:
+        path, name = maintenance.extract_mp3(store, clip_id)
+    except ServiceError as exc:
+        raise _fail(exc) from exc
+    return FileResponse(
+        path, media_type="audio/mpeg", filename=name,
+        headers={"Content-Disposition": f'attachment; filename="{name}"'},
+    )
+
+
+@app.get("/api/clips/{clip_id}/thumb-candidates")
+def clip_thumb_candidates(clip_id: str, n: str = "6"):
+    """Evenly spread frames to choose a poster from (T6 Thumbnail Picker)."""
+    try:
+        return maintenance.thumb_candidates(store, clip_id, n)
+    except ServiceError as exc:
+        raise _fail(exc) from exc
+
+
+@app.post("/api/clips/{clip_id}/thumb-pick")
+def clip_thumb_pick(clip_id: str, payload: dict = Body(...)):
+    """Make one candidate the clip's thumbnail (T6)."""
+    try:
+        return maintenance.thumb_pick(store, clip_id, payload)
+    except ServiceError as exc:
+        raise _fail(exc) from exc
 
 
 @app.get("/api/clips/{clip_id}/srt")
@@ -504,7 +641,7 @@ def backup():
     return FileResponse(
         backup_path,
         media_type="application/json",
-        filename=f"autoshorts-state-{int(time.time())}.json",
+        filename=f"qyro-state-{int(time.time())}.json",
         background=BackgroundTask(backup_path.unlink, missing_ok=True),
     )
 
@@ -521,6 +658,15 @@ def restore(payload: dict = Body(...)):
 # Static web UI
 # ---------------------------------------------------------------------------
 app.mount("/static", StaticFiles(directory=WEB_DIR), name="static")
+
+
+@app.get("/sw.js")
+def service_worker():
+    """Served from the origin root so the worker can control "/". """
+    path = WEB_DIR / "sw.js"
+    if not path.is_file():
+        raise HTTPException(status_code=404, detail="No service worker")
+    return FileResponse(path, media_type="text/javascript; charset=utf-8")
 
 
 @app.get("/")

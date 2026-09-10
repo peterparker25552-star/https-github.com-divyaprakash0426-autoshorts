@@ -1,4 +1,4 @@
-/* AutoShorts UI — vanilla JS, polls /api/state. */
+/* Qyro UI — vanilla JS, no build step, no emoji. Polls /api/state. */
 const $ = (sel) => document.querySelector(sel);
 
 const LENGTH_PRESETS = {
@@ -30,14 +30,33 @@ const SPEED_OPTIONS = [
 ];
 const STYLE_OPTIONS = [
   ["blur", "blur bg"],
-  ["smart", "🎥 Smart"],
+  ["smart", "smart (motion tracked)"],
   ["crop", "center crop"],
   ["fill", "fill"],
   ["fit", "fit + bars"],
 ];
 const QUALITY_OPTIONS = [
-  ["fast", "720p class"],
-  ["full", "1080p class"],
+  ["fast", "720p · quick"],
+  ["full", "1080p · sharp"],
+  ["1440p", "1440p · slow on phone"],
+];
+const BRAND_OPTIONS = [
+  ["none", "no brand style"],
+  ["qyro-pop", "Qyro Pop"],
+  ["qyro-minimal", "Qyro Minimal"],
+  ["qyro-neon", "Qyro Neon"],
+];
+const LOGO_PRESETS = [
+  ["", "no logo remover"],
+  ["topleft", "top left"],
+  ["topright", "top right"],
+  ["bottomleft", "bottom left"],
+  ["bottomright", "bottom right"],
+  ["custom", "custom box"],
+];
+const AUDIO_MIX_OPTIONS = [
+  ["replace", "replace audio"],
+  ["duck", "duck voice under track"],
 ];
 
 const SIGNAL_LABELS = {
@@ -78,10 +97,19 @@ let baseDefaults = {
   captions: "classic",
   captions_pos: "standard",
   captions_box: false,
+  captions_brand: "none",
   speed: 1.0,
   progress: false,
   silence: false,
   loud: false,
+  sync_beats: false,
+  audio_track: "",
+  audio_mix: "duck",
+  silence_noise: -35,
+  silence_min: 0.5,
+  logo_preset: "",
+  logo_size: "M",
+  logo_feather: 0,
   playlist_url: "",
 };
 let presetOverlay = {};
@@ -117,6 +145,87 @@ function fmtBytes(bytes) {
   let unit = 0;
   while (value >= 1024 && unit < units.length - 1) { value /= 1024; unit += 1; }
   return `${value.toFixed(value >= 10 ? 0 : 1)} ${units[unit]}`;
+}
+
+// ------------------------------------------------------------------ brand
+/* Qyro mark: a "Q" whose tail is a play triangle cut out of the ring.
+   One geometry, inlined so the header needs zero image requests. */
+const LOGO_SVG = `
+<svg viewBox="0 0 64 64" role="img" aria-label="Qyro" focusable="false">
+  <defs>
+    <linearGradient id="qg" x1="6" y1="4" x2="58" y2="60" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#7C3AED"/>
+      <stop offset="0.55" stop-color="#9D5CF5"/>
+      <stop offset="1" stop-color="#22D3EE"/>
+    </linearGradient>
+    <mask id="qcut">
+      <rect width="64" height="64" fill="#fff"/>
+      <path d="M29.00 31.00 L62.00 47.00 L33.50 68.50 Z" fill="#000"/>
+    </mask>
+  </defs>
+  <rect width="64" height="64" fill="#0A0A0F"/>
+  <g mask="url(#qcut)">
+    <path fill="url(#qg)" d="M6.20 27.00a20.80 20.80 0 1 0 41.60 0a20.80 20.80 0 1 0 -41.60 0 Z"/>
+    <path fill="#0A0A0F" d="M15.20 27.00a11.80 11.80 0 1 0 23.60 0a11.80 11.80 0 1 0 -23.60 0 Z"/>
+  </g>
+  <path d="M36.00 38.50 L55.00 50.50 L36.00 62.50 Z" fill="url(#qg)"/>
+</svg>`;
+
+/* Icon set: every glyph in the UI is inline SVG — no emoji, no font, no
+   network. 24x24, stroke uses currentColor so icons inherit button text. */
+const ICON_PATHS = {
+  play: `<path d="M8 5.2v13.6L19 12z"/>`,
+  search: `<circle cx="11" cy="11" r="7"/><path d="M16.4 16.4L21 21"/>`,
+  download: `<path d="M12 3.5v11.5m0 0l-4.5-4.5M12 15l4.5-4.5M4 20h16"/>`,
+  upload: `<path d="M12 16.5V4.5m0 0l-4.5 4.5M12 4.5l4.5 4.5M4 15v3.2A1.8 1.8 0 0 0 5.8 20h12.4A1.8 1.8 0 0 0 20 18.2V15"/>`,
+  sliders: `<path d="M4 7.5h8M17.5 7.5H20M4 16.5h4M13.5 16.5H20"/><circle cx="14.6" cy="7.5" r="2.4"/><circle cx="10.6" cy="16.5" r="2.4"/>`,
+  trash: `<path d="M4.5 7h15M9.5 7V4.6h5V7M6.8 7l.9 13h8.6l.9-13M10.5 11v5.5M13.5 11v5.5"/>`,
+  pencil: `<path d="M4.5 19.5h4L20 8a2.1 2.1 0 0 0-3-3L5.5 16.5z"/>`,
+  x: `<path d="M6.5 6.5l11 11M17.5 6.5l-11 11"/>`,
+  retry: `<path d="M20 12a8 8 0 1 1-2.4-5.7M20 4v4.2h-4.2"/>`,
+  sparkle: `<path d="M11.5 3.5l1.7 4.6 4.6 1.7-4.6 1.7-1.7 4.6-1.7-4.6L5.2 9.8l4.6-1.7z"/><path d="M18 15l.8 2.2 2.2.8-2.2.8L18 21l-.8-2.2-2.2-.8 2.2-.8z"/>`,
+  music: `<path d="M9 17.5V5l11-2v12"/><circle cx="6.5" cy="17.5" r="2.5"/><circle cx="17.5" cy="15" r="2.5"/>`,
+  captions: `<rect x="3" y="5" width="18" height="14" rx="3"/><path d="M7.5 13.5l2.5-2.5M7.5 16h5M14 13.5l2.5-2.5M14 16h2.5"/>`,
+  crop: `<path d="M6.5 2.5v15h15M2.5 6.5h15v15"/>`,
+  wand: `<path d="M4.5 19.5L15 9M13 4l.9 2.1L16 7l-2.1.9L13 10l-.9-2.1L10 7l2.1-.9zM19 12l.6 1.6 1.6.6-1.6.6-.6 1.6-.6-1.6-1.6-.6 1.6-.6zM16.5 7.5L19 5"/>`,
+  grid: `<rect x="3.5" y="3.5" width="7" height="7" rx="2"/><rect x="13.5" y="3.5" width="7" height="7" rx="2"/><rect x="3.5" y="13.5" width="7" height="7" rx="2"/><rect x="13.5" y="13.5" width="7" height="7" rx="2"/>`,
+  link: `<path d="M9.5 14.5l5-5M8 12l-2 2a3.4 3.4 0 0 0 4.8 4.8l2-2M16 12l2-2a3.4 3.4 0 0 0-4.8-4.8l-2 2"/>`,
+  film: `<rect x="3" y="4.5" width="18" height="15" rx="3"/><path d="M8 4.5v15M16 4.5v15M3 12h18"/>`,
+  clock: `<circle cx="12" cy="12" r="8.5"/><path d="M12 7v5.2l3.4 2"/>`,
+  box: `<path d="M12 3.2l8 4.4v8.8L12 20.8 4 16.4V7.6z"/><path d="M4 7.6l8 4.4 8-4.4M12 12v8.8"/>`,
+  eye: `<path d="M2.6 12S6.2 5.8 12 5.8 21.4 12 21.4 12 17.8 18.2 12 18.2 2.6 12 2.6 12z"/><circle cx="12" cy="12" r="3"/>`,
+  chart: `<path d="M4 20V11M10 20V4.5M16 20v-6.5M2.5 20h19"/>`,
+  book: `<path d="M4 5h5.5A2.5 2.5 0 0 1 12 7.5V20a2.2 2.2 0 0 0-2.2-2.2H4zM20 5h-5.5A2.5 2.5 0 0 0 12 7.5V20a2.2 2.2 0 0 1 2.2-2.2H20z"/>`,
+  zap: `<path d="M13.5 2.5L5 14h5.5L10 21.5 19 10h-5.5z"/>`,
+  scissors: `<circle cx="6.5" cy="6.5" r="2.6"/><circle cx="6.5" cy="17.5" r="2.6"/><path d="M8.7 8.2L20 17M8.7 15.8L20 7"/>`,
+  copy: `<rect x="9" y="9" width="11.5" height="11.5" rx="2.5"/><path d="M15 5.5A2 2 0 0 0 13 3.5H5.5a2 2 0 0 0-2 2V13a2 2 0 0 0 2 2"/>`,
+  share: `<path d="M12 16.5V4.2m0 0L8 8.4m4-4.2l4 4.2M4.5 14v4.2A1.8 1.8 0 0 0 6.3 20h11.4a1.8 1.8 0 0 0 1.8-1.8V14"/>`,
+  check: `<path d="M4.5 12.5l5 5 10-10.5"/>`,
+  alert: `<path d="M12 3.8l9.2 16H2.8z"/><path d="M12 9.6v4.6M12 17.2v.1"/>`,
+  wave: `<path d="M2.5 12h2.2l2-6.5 3 13 3-9.5 2 5 2-2h4.8"/>`,
+  image: `<rect x="3.2" y="4.5" width="17.6" height="15" rx="3"/><circle cx="9" cy="10" r="1.8"/><path d="M4 17l4.8-4.4 3.4 3 3-2.6 4.6 4"/>`,
+  external: `<path d="M13.5 4.5H20v6.5M20 4.5l-8.5 8.5M18 14v4.2A1.8 1.8 0 0 1 16.2 20H5.8A1.8 1.8 0 0 1 4 18.2V7.8A1.8 1.8 0 0 1 5.8 6H10"/>`,
+  text: `<path d="M4.5 6.5h15M4.5 11.5h15M4.5 16.5h9"/>`,
+  folder: `<path d="M3.5 7.5A2 2 0 0 1 5.5 5.5H10l2 2.5h6.5a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2h-13a2 2 0 0 1-2-2z"/>`,
+};
+
+function icon(name) {
+  return `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"
+    stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false">
+    ${ICON_PATHS[name] || ""}</svg>`;
+}
+const ic = (name) => `<span class="ic">${icon(name)}</span>`;
+
+/* Static markup carries <span class="ic" data-icon="play">; this fills them
+   once at boot so the HTML stays readable and the icons stay scriptable. */
+function hydrateIcons(root) {
+  (root || document).querySelectorAll("[data-icon]").forEach((el) => {
+    el.innerHTML = icon(el.dataset.icon);
+    if (!el.classList.contains("ic")) el.classList.add("ic");
+  });
+  (root || document).querySelectorAll("[data-logo]").forEach((el) => {
+    el.innerHTML = LOGO_SVG;
+  });
 }
 
 function toast(msg, isError = false) {
@@ -191,6 +300,19 @@ function readCardOpts(card) {
     progress: flag(".opt-progress"),
     silence: flag(".opt-silence"),
     loud: flag(".opt-loud"),
+    captions_brand: pick(".opt-brand", baseDefaults.captions_brand),
+    sync_beats: flag(".opt-beats"),
+    audio_track: pick(".opt-track", ""),
+    audio_mix: pick(".opt-mix", baseDefaults.audio_mix || "duck"),
+    logo_preset: pick(".opt-logo", ""),
+    logo_size: pick(".opt-logo-size", "M"),
+    logo_feather: +pick(".opt-logo-feather", 0) || 0,
+    logoCustom: {
+      x: +pick(".opt-logo-x", 0.03), y: +pick(".opt-logo-y", 0.03),
+      w: +pick(".opt-logo-w", 0.3), h: +pick(".opt-logo-h", 0.1),
+    },
+    silence_noise: +pick(".opt-silence-noise", -35),
+    silence_min: +pick(".opt-silence-min", 0.5),
   };
 }
 
@@ -206,11 +328,14 @@ function renderHealth(h) {
   const yt = h.youtube_reachable;
   const llm = h.llm_available;
   const disk = h.disk_free ? `${fmtBytes(h.disk_free)} free` : "disk ?";
+  const engine = h.engine || {};
   $("#health").innerHTML = `
     <span class="chip ${yt ? "ok" : "bad"}"><span class="dot"></span>YouTube ${yt ? "reachable" : "unreachable — demo mode"}</span>
     <span class="chip ${h.ffmpeg ? "ok" : "bad"}"><span class="dot"></span>ffmpeg ${h.ffmpeg ? "ready" : "missing"}</span>
     <span class="chip"><span class="dot"></span>${esc(disk)}</span>
-    <span class="chip ${llm ? "ok" : ""}"><span class="dot"></span>${llm ? "AI polish on" : "AI off"}</span>`;
+    <span class="chip ${llm ? "ok" : ""}"><span class="dot"></span>${
+      llm ? `AI: ${esc(engine.provider || "custom")}` : "AI off — offline titles"
+    }</span>`;
 }
 
 function renderStats() {
@@ -251,7 +376,7 @@ function waveformStrip(waveform) {
 
 function intelLine(stats) {
   if (!stats) return "";
-  return `<div class="intel">📊 ${stats.words} words · ${stats.sentences} sentences ·
+  return `<div class="intel">${ic("chart")} ${stats.words} words · ${stats.sentences} sentences ·
     ${stats.questions} questions · ${stats.numbers} numbers · ${stats.wpm} wpm</div>`;
 }
 
@@ -295,16 +420,41 @@ function renderManualBox(ep) {
 function renderAdvOpts(ep, opts) {
   const open = state.detailsOpen[`adv-${ep.id}`] ? " open" : "";
   return `<details class="advopts"${open}>
-    <summary>⚙ Fine-tune</summary>
+    <summary>${ic("sliders")} Fine-tune</summary>
     <div class="advgrid">
       <label>Captions <select class="opt-captions">${chosen(CAPTION_OPTIONS, opts.captions)}</select></label>
       <label>Cap position <select class="opt-cap-pos">${chosen(CAPTION_POS_OPTIONS, opts.captions_pos)}</select></label>
-      <label class="toggle"><input class="opt-cap-box" type="checkbox"${checkedAttr(opts.captions_box)}> 📦 caption box</label>
+      <label class="toggle" title="Opaque box behind the words">${ic("box")}<input class="opt-cap-box" type="checkbox"${checkedAttr(opts.captions_box)}> caption box</label>
       <label>Format <select class="opt-format">${chosen(FORMAT_OPTIONS, opts.format)}</select></label>
       <label>Speed <input class="opt-speed" type="number" min="0.5" max="2" step="0.05" value="${Number(opts.speed) || 1}"></label>
       <label class="toggle"><input class="opt-progress" type="checkbox"${checkedAttr(opts.progress)}> progress bar</label>
       <label class="toggle"><input class="opt-silence" type="checkbox"${checkedAttr(opts.silence)}> jump-cut silence</label>
       <label class="toggle"><input class="opt-loud" type="checkbox"${checkedAttr(opts.loud)}> loudness</label>
+      <label>Caption brand <select class="opt-brand">${chosen(BRAND_OPTIONS, opts.captions_brand)}</select></label>
+      <label class="toggle" title="Snap the cut points to the loudest beats measured offline">${ic("wave")}<input class="opt-beats" type="checkbox"${checkedAttr(opts.sync_beats)}> sync to beats</label>
+      <label>Music bed <select class="opt-track">${trackOptions(opts.audio_track)}</select></label>
+      <label>Bed mode <select class="opt-mix">${chosen(AUDIO_MIX_OPTIONS, opts.audio_mix)}</select></label>
+      <label>Logo remover <select class="opt-logo">${chosen(LOGO_PRESETS, opts.logo_preset)}</select></label>
+      ${opts.logo_preset === "custom" ? `<label>X <input class="opt-logo-x" type="number" min="0" max="0.98" step="0.01" value="${(opts.logoCustom || {}).x ?? 0.03}"></label>
+      <label>Y <input class="opt-logo-y" type="number" min="0" max="0.98" step="0.01" value="${(opts.logoCustom || {}).y ?? 0.03}"></label>
+      <label>Width <input class="opt-logo-w" type="number" min="0.01" max="0.98" step="0.01" value="${(opts.logoCustom || {}).w ?? 0.3}"></label>
+      <label>Height <input class="opt-logo-h" type="number" min="0.01" max="0.98" step="0.01" value="${(opts.logoCustom || {}).h ?? 0.1}"></label>` : ""}
+      <label>Box size <select class="opt-logo-size">${chosen([["S", "small"], ["M", "medium"], ["L", "large"]], opts.logo_size)}</select></label>
+      <label class="full">Feather <span class="rangerow">
+          <input class="opt-logo-feather" type="range" min="0" max="24" step="1" value="${Number(opts.logo_feather) || 0}">
+          <output class="out-logo-feather">${Number(opts.logo_feather) || 0}px</output>
+        </span></label>
+      ${logoPreview(opts) + brandPreview(opts.captions_brand)}
+      <label class="full">Silence tuner — cut quiet gaps
+        <span class="rangerow">
+          <input class="opt-silence-noise" type="range" min="-70" max="-18" step="1" value="${Number(opts.silence_noise)}">
+          <output class="out-silence-noise">${Number(opts.silence_noise).toFixed(0)} dB</output>
+        </span>
+        <span class="rangerow">
+          <input class="opt-silence-min" type="range" min="0.1" max="2" step="0.1" value="${Number(opts.silence_min)}">
+          <output class="out-silence-min">${Number(opts.silence_min).toFixed(1)} s</output>
+        </span>
+      </label>
     </div>
   </details>`;
 }
@@ -344,22 +494,22 @@ function renderEpisodes() {
       <div class="meta">
         <span class="badge ${ep.source === "demo" ? "demo" : "yt"}">${ep.source === "demo" ? "demo" : "youtube"}</span>
         <span class="badge status-${status}">${status}</span>
-        <span>⏱ ${fmtDur(ep.duration)}</span>
-        <span>🎬 ${ep.clip_count || 0}</span>
+        <span>${ic("clock")} ${fmtDur(ep.duration)}</span>
+        <span>${ic("film")} ${ep.clip_count || 0}</span>
       </div>
       ${busy ? `
         <div class="progressbar"><div class="fill" style="width:${pct}%"></div></div>
         <div class="stepmsg">${esc(job?.message || job?.step || "working…")}</div>` : ""}
-      ${ep.error ? `<div class="stepmsg error">⚠ ${esc(ep.error)}</div>` : ""}
+      ${ep.error ? `<div class="stepmsg error">${ic("alert")} ${esc(ep.error)}</div>` : ""}
       <div class="controls">
         <select class="opt-count" ${disabled} aria-label="Number of shorts">
           ${[1, 2, 3, 5, 8, 12].map((n) => `<option value="${String(n)}"${String(n) === String(opts.count) ? " selected" : ""}>${n} shorts</option>`).join("")}
         </select>
         <select class="opt-profile" ${disabled} aria-label="Highlight profile">
-          <option value="viral"${opts.profile === "viral" ? " selected" : ""}>🔥 Viral</option>
-          <option value="story"${opts.profile === "story" ? " selected" : ""}>📖 Story</option>
-          <option value="facts"${opts.profile === "facts" ? " selected" : ""}>📊 Facts</option>
-          <option value="energy"${opts.profile === "energy" ? " selected" : ""}>⚡ Energy</option>
+          <option value="viral"${opts.profile === "viral" ? " selected" : ""}>Viral picks</option>
+          <option value="story"${opts.profile === "story" ? " selected" : ""}>Story arc</option>
+          <option value="facts"${opts.profile === "facts" ? " selected" : ""}>Numbers &amp; facts</option>
+          <option value="energy"${opts.profile === "energy" ? " selected" : ""}>High energy</option>
         </select>
         <select class="opt-length" ${disabled} aria-label="Clip length">
           <option value="short"${lengthKey(opts.min_dur, opts.max_dur) === "short" ? " selected" : ""}>Short · 20–30s</option>
@@ -380,21 +530,23 @@ function renderEpisodes() {
           ${chosen(CAPTION_OPTIONS, opts.captions)}
         </select>
         <button class="btn primary small" onclick="generate('${ep.id}', this)" ${disabled}>
-          ${busy ? "Working…" : "Generate"}
+          ${busy ? "Working\u2026" : "Generate"}
         </button>
-        <button class="btn small" onclick="previewPicks('${ep.id}', this)" ${disabled}>👁 Preview</button>
+        <button class="btn small" onclick="previewPicks('${ep.id}', this)" ${disabled}>${ic("eye")} Preview</button>
       </div>
+      ${opts.quality === "1440p" ? `<div class="hint">${ic("clock")} 1440p is a big render — expect it to be slow on a phone.</div>` : ""}
       ${renderAdvOpts(ep, opts)}
       ${renderMoments(ep.id)}
       ${renderManualBox(ep)}
       <div class="subrow">
-        <button class="btn small" onclick="openCutter('${ep.id}')" ${disabled}>📜 Transcript cutter</button>
-        <button class="btn small" onclick="openChapters('${ep.id}')" ${disabled}>📑 Chapters</button>
-        <button class="btn small" onclick="exportCsv('${ep.id}')" ${disabled}>📊 CSV</button>
-        <button class="btn small" onclick="toggleManual('${ep.id}')" ${disabled}>✂ Exact range</button>
+        <button class="btn small" onclick="openCutter('${ep.id}')" ${disabled}>${ic("text")} Transcript</button>
+        <button class="btn small" onclick="openChapters('${ep.id}')" ${disabled}>${ic("book")} Chapters</button>
+        <button class="btn small" onclick="openBeats('${ep.id}')" ${disabled}>${ic("wave")} Beats</button>
+        <button class="btn small" onclick="exportCsv('${ep.id}')" ${disabled}>${ic("download")} CSV</button>
+        <button class="btn small" onclick="toggleManual('${ep.id}')" ${disabled}>${ic("scissors")} Exact range</button>
         <span class="spacer"></span>
-        <a class="btn small" href="https://www.youtube.com/watch?v=${esc(ep.id)}" target="_blank" rel="noopener">↗ YouTube</a>
-        <button class="btn small iconbtn" title="Delete episode and its clips" onclick="deleteEpisode('${ep.id}', this)" ${disabled}>🗑</button>
+        <a class="btn small" href="https://www.youtube.com/watch?v=${esc(ep.id)}" target="_blank" rel="noopener">${ic("external")} YouTube</a>
+        <button class="btn small iconbtn" title="Delete episode and its clips" aria-label="Delete episode" onclick="deleteEpisode('${ep.id}', this)" ${disabled}>${ic("trash")}</button>
       </div>
     </div>`;
   }).join("");
@@ -448,16 +600,17 @@ function renderShorts() {
       <div class="body">
         <div class="clip-title">${esc(clip.title)}</div>
         <div class="sub">From: <a href="https://www.youtube.com/watch?v=${esc(clip.episode_id)}&t=${Math.floor(clip.start || 0)}s" target="_blank" rel="noopener" title="${esc(clip.episode_title)}">${esc(trim(clip.episode_title, 42))}</a></div>
-        <div class="sub timechip">⏱ ${fmtRange(clip.start, clip.end)} · ${Number(clip.duration).toFixed(1)}s · ${clip.width || 720}×${clip.height || 1280}${clip.format && clip.format !== "vertical" ? ` · ${esc(clip.format)}` : ""} · ${esc(clip.style || "blur")}${clip.captions_box ? " 📦" : ""}${clip.captions_pos === "low" ? " ⬇" : ""}</div>
+        <div class="sub timechip">${ic("clock")} ${fmtRange(clip.start, clip.end)} · ${Number(clip.duration).toFixed(1)}s · ${clip.width || 720}×${clip.height || 1280}${clip.format && clip.format !== "vertical" ? ` · ${esc(clip.format)}` : ""} · ${esc(clip.style || "blur")}${clip.captions_box ? " · box" : ""}${clip.captions_pos === "low" ? " · low" : ""}${clip.sync_beats ? " · beats" : ""}${clip.audio_track ? ` · ${esc(clip.audio_mix === "duck" ? "ducked track" : "new track")}` : ""}${clip.logo && clip.logo.enabled ? ` · ${esc(clip.logo.method)}` : ""}</div>
         ${waveformStrip(clip.waveform)}
         <div class="scorebox">
           <div class="scorebar"><div class="fill" style="width:${Math.round((Number(clip.score || 0) / maxScore) * 100)}%"></div></div>
           <div class="scorenum">${Number(clip.score || 0).toFixed(1)}</div>
         </div>
         ${signalBars(clip.breakdown)}
+        ${clip.engine_notice ? `<div class="noticeline">${ic("alert")} ${esc(clip.engine_notice)}</div>` : ""}
         <div class="reasons">${(clip.reasons || []).map((reason) => `<span class="reason">${esc(reason)}</span>`).join("")}</div>
         ${pack ? `<details class="pack"${open}>
-          <summary>📝 Upload pack${pack.polished_by ? ` · ✨ ${esc(pack.polished_by)}` : ""}</summary>
+          <summary>${ic("text")} Upload pack${pack.polished_by ? ` · ${ic("sparkle")} ${esc(pack.polished_by)}` : ""}</summary>
           <div class="packbody">
             ${(pack.titles || []).map((title) => `<div class="packtitle">${esc(title)}</div>`).join("")}
             <div class="tags">${(pack.hashtags || []).map((tag) => `<span class="tag">${esc(tag)}</span>`).join("")}</div>
@@ -465,17 +618,20 @@ function renderShorts() {
           </div>
         </details>` : ""}
         <div class="actions">
-          <a class="btn small" href="/api/clips/${clip.id}/file" download="autoshort-${clip.id}.mp4">🎬 Video</a>
-          <a class="btn small" href="/api/clips/${clip.id}/srt">💬 SRT</a>
-          ${clip.thumb ? `<a class="btn small" href="/api/clips/${clip.id}/thumb" target="_blank" rel="noopener">🖼 Thumb</a>` : ""}
-          <button class="btn small" onclick="shareClip('${clip.id}')">📤 Share</button>
-          <button class="btn small" onclick="renameClip('${clip.id}')">✏️ Rename</button>
-          <button class="btn small iconbtn" aria-label="Delete clip" onclick="deleteClip('${clip.id}')">🗑</button>
+          <a class="btn small" href="/api/clips/${clip.id}/file" download="qyro-${clip.id}.mp4">${ic("play")} Video</a>
+          <a class="btn small" href="/api/clips/${clip.id}/srt">${ic("captions")} SRT</a>
+          <a class="btn small" href="/api/clips/${clip.id}/audio.mp3">${ic("music")} MP3</a>
+          <button class="btn small" onclick="openThumbPicker('${clip.id}')">${ic("image")} Thumb</button>
+          <button class="btn small" onclick="openTitleLab('${clip.id}')">${ic("wand")} Titles</button>
+          <button class="btn small" onclick="openInspector('${clip.id}')">${ic("crop")} Inspect</button>
+          <button class="btn small" onclick="shareClip('${clip.id}')">${ic("share")} Share</button>
+          <button class="btn small iconbtn" aria-label="Rename clip" title="Rename clip" onclick="renameClip('${clip.id}')">${ic("pencil")}</button>
+          <button class="btn small iconbtn" aria-label="Delete clip" title="Delete clip" onclick="deleteClip('${clip.id}')">${ic("trash")}</button>
         </div>
         <div class="actions">
-          <button class="btn small" onclick="copyPack('${clip.id}')" ${pack ? "" : "disabled"}>📋 Copy pack</button>
-          <button class="btn small" onclick="rerenderClip('${clip.id}')">♻ Re-render</button>
-          ${aiOn ? `<button class="btn small" onclick="polishClip('${clip.id}')">✨ Polish</button>` : ""}
+          <button class="btn small" onclick="copyPack('${clip.id}')" ${pack ? "" : "disabled"}>${ic("copy")} Copy pack</button>
+          <button class="btn small" onclick="rerenderClip('${clip.id}')">${ic("retry")} Re-render</button>
+          ${aiOn ? `<button class="btn small" onclick="polishClip('${clip.id}')">${ic("sparkle")} Polish</button>` : ""}
         </div>
       </div>
     </div>`;
@@ -487,6 +643,7 @@ async function refresh() {
   try {
     const [st, health] = await Promise.all([api("/api/state"), api("/api/health")]);
     state.data = st;
+    state.health = health;
     baseDefaults = { ...baseDefaults, ...(st.defaults || {}) };
     renderHealth(health);
     renderStats();
@@ -497,6 +654,7 @@ async function refresh() {
       autopilot.checked = !!(st.settings || {}).autopilot;
     }
     renderPresets();
+    renderEngineHint();
   } catch (error) {
     console.error(error);
   }
@@ -538,7 +696,7 @@ async function loadDemo() {
 }
 
 function renderOptsPayload(opts) {
-  return {
+  const payload = {
     count: opts.count,
     min_dur: opts.min_dur,
     max_dur: opts.max_dur,
@@ -553,7 +711,15 @@ function renderOptsPayload(opts) {
     progress: !!opts.progress,
     silence: !!opts.silence,
     loud: !!opts.loud,
+    captions_brand: opts.captions_brand || "none",
+    sync_beats: !!opts.sync_beats,
+    audio_mix: opts.audio_mix || "duck",
+    logo_box: logoBoxFrom(opts),
+    silence_noise: Number(opts.silence_noise),
+    silence_min: Number(opts.silence_min),
   };
+  if (opts.audio_track) payload.audio_track = opts.audio_track;
+  return payload;
 }
 
 async function generate(epId, btn) {
@@ -588,7 +754,7 @@ async function previewPicks(epId, btn) {
   } catch (error) {
     toast(error.message, true);
     btn.disabled = false;
-    btn.textContent = "👁 Preview";
+    btn.innerHTML = `${ic("eye")} Preview`;
   }
 }
 
@@ -668,7 +834,7 @@ function exportCsv(epId) {
   const url = `/api/episodes/${epId}/export?count=${encodeURIComponent(opts.count)}&profile=${encodeURIComponent(opts.profile)}`;
   const link = document.createElement("a");
   link.href = url;
-  link.download = `autoshorts-${epId}-moments.csv`;
+  link.download = `qyro-${epId}-moments.csv`;
   document.body.appendChild(link);
   link.click();
   link.remove();
@@ -691,14 +857,14 @@ async function copyText(text) {
 
 async function shareClip(id) {
   const clip = (state.data?.clips || []).find((item) => item.id === id);
-  const title = clip?.title || "AutoShorts clip";
+  const title = clip?.title || "Qyro clip";
   const url = `${location.origin}/api/clips/${id}/file`;
   try {
     if (navigator.share && navigator.canShare) {
       const response = await fetch(`/api/clips/${id}/file`);
       if (!response.ok) throw new Error("Could not load clip");
       const blob = await response.blob();
-      const file = new File([blob], `autoshort-${id}.mp4`, { type: "video/mp4" });
+      const file = new File([blob], `qyro-${id}.mp4`, { type: "video/mp4" });
       if (navigator.canShare({ files: [file] })) {
         await navigator.share({ title, text: title, files: [file] });
         return;
@@ -744,9 +910,14 @@ async function copyPack(id) {
 }
 
 async function polishClip(id) {
+  toast("Asking the engine for a rewrite\u2026");
   try {
     const result = await api(`/api/clips/${id}/polish`, { method: "POST" });
-    toast(`Pack polished by ${result.pack?.polished_by || "the model"}`);
+    if (result.notice) {
+      toast(`${result.notice} — offline pack kept`, true);
+    } else {
+      toast(`Pack rewritten by ${result.engine || result.pack?.polished_by || "the engine"}`);
+    }
   } catch (error) {
     toast(error.message, true);
   }
@@ -766,14 +937,19 @@ function rerenderClip(id) {
       <label>Format <select id="rr-format">${chosen(FORMAT_OPTIONS, opts.format)}</select></label>
       <label>Captions <select id="rr-captions">${chosen(CAPTION_OPTIONS, opts.captions)}</select></label>
       <label>Cap position <select id="rr-cappos">${chosen(CAPTION_POS_OPTIONS, opts.captions_pos || "standard")}</select></label>
-      <label class="toggle"><input id="rr-capbox" type="checkbox"${checkedAttr(opts.captions_box)}> 📦 caption box</label>
+      <label class="toggle"><input id="rr-capbox" type="checkbox"${checkedAttr(opts.captions_box)}> caption box</label>
       <label>Speed <input id="rr-speed" type="number" min="0.5" max="2" step="0.05" value="${Number(opts.speed) || 1}"></label>
       <label class="toggle"><input id="rr-progress" type="checkbox"${checkedAttr(opts.progress)}> progress bar</label>
       <label class="toggle"><input id="rr-silence" type="checkbox"${checkedAttr(opts.silence)}> jump-cut silence</label>
       <label class="toggle"><input id="rr-loud" type="checkbox"${checkedAttr(opts.loud)}> loudness</label>
       <label>Title <input id="rr-title" type="text" maxlength="120" value="${esc(clip.title || "")}"></label>
     </div>
-    <div class="cutbar"><button class="btn primary small" id="rr-go">♻ Re-render</button></div>`);
+      <label>Brand <select id="rr-brand">${chosen(BRAND_OPTIONS, opts.captions_brand || "none")}</select></label>
+      <label>Music bed <select id="rr-track">${trackOptions(opts.audio_track)}</select></label>
+      <label>Track mode <select id="rr-mix">${chosen(AUDIO_MIX_OPTIONS, opts.audio_mix || "duck")}</select></label>
+      <label class="toggle"><input id="rr-beats" type="checkbox"${checkedAttr(opts.sync_beats)}> sync cuts to beats</label>
+    </div>
+    <div class="cutbar"><button class="btn primary small" id="rr-go">${ic("retry")} Re-render</button></div>`);
   $("#rr-go")?.addEventListener("click", async (event) => {
     const btn = event.target;
     btn.disabled = true;
@@ -818,7 +994,7 @@ async function downloadZip() {
     const blob = await response.blob();
     const disposition = response.headers.get("content-disposition") || "";
     const match = disposition.match(/filename\*?=(?:UTF-8''|\")?([^\";]+)/i);
-    const filename = match ? decodeURIComponent(match[1].replace(/"/g, "")) : "autoshorts.zip";
+    const filename = match ? decodeURIComponent(match[1].replace(/"/g, "")) : "qyro.zip";
     const link = document.createElement("a");
     link.href = URL.createObjectURL(blob);
     link.download = filename;
@@ -904,7 +1080,7 @@ async function processAll() {
     toast(error.message, true);
   } finally {
     btn.disabled = false;
-    btn.textContent = "⚡ Process-all";
+    btn.innerHTML = `${ic("wand")} Process all`;
   }
   refresh();
 }
@@ -931,7 +1107,7 @@ function openModal(title, body, wide = false) {
     <div class="modal${wide ? " wide" : ""}" role="dialog" aria-modal="true" aria-label="${esc(title)}">
       <div class="modal-head">
         <h3>${esc(title)}</h3>
-        <button class="btn small iconbtn" data-close="1" aria-label="Close">✕</button>
+        <button class="btn small iconbtn" data-close="1" aria-label="Close">${ic("x")}</button>
       </div>
       <div class="modal-body">${body}</div>
     </div>`;
@@ -951,7 +1127,7 @@ function modalBody() {
 
 // ---------------------------------------------------------------- search
 function openSearch() {
-  openModal("🔍 Search transcripts", `
+  openModal("Search transcripts", `
     <div class="stepmsg">Offline search over demo + downloaded transcripts — nothing hits the network.</div>
     <div class="searchbar">
       <input id="searchQ" type="search" placeholder="e.g. fear, 40 percent, CBI…" autocomplete="off">
@@ -986,7 +1162,7 @@ async function runSearch() {
         </div>`).join("")
       : `<div class="stepmsg">No hits. Transcripts are cached only after an episode is processed (demo episodes always search).</div>`;
   } catch (error) {
-    box.innerHTML = `<div class="stepmsg error">⚠ ${esc(error.message)}</div>`;
+    box.innerHTML = `<div class="stepmsg error">${ic("alert")} ${esc(error.message)}</div>`;
   }
 }
 
@@ -998,7 +1174,7 @@ function jumpToHit(epId, start) {
 
 // ---------------------------------------------------------------- chapters
 async function openChapters(epId) {
-  openModal("📑 Chapters", `<div class="stepmsg"><span class="spinner"></span>Scoring story moments…</div>`, true);
+  openModal("Chapters", `<div class="stepmsg"><span class="spinner"></span>Scoring story moments…</div>`, true);
   try {
     const data = await api(`/api/episodes/${epId}/chapters`);
     modalBody().innerHTML = `
@@ -1009,27 +1185,27 @@ async function openChapters(epId) {
       <pre class="chapterpre">${esc(data.text || "")}</pre>
       <div class="cutbar">
         <span class="count-pill">${(data.chapters || []).length} chapters</span>
-        <button class="btn primary small" id="chapterCopy">📋 Copy chapters</button>
+        <button class="btn primary small" id="chapterCopy">${ic("copy")} Copy chapters</button>
       </div>`;
     $("#chapterCopy").addEventListener("click", async () => {
       await copyText(data.text || "");
       toast("Chapters copied");
     });
   } catch (error) {
-    modalBody().innerHTML = `<div class="stepmsg error">⚠ ${esc(error.message)}</div>`;
+    modalBody().innerHTML = `<div class="stepmsg error">${ic("alert")} ${esc(error.message)}</div>`;
   }
 }
 
 // ---------------------------------------------------------------- cutter
 async function openCutter(epId, scrollStart = null) {
   state.cutter = { epId, segments: [], start: null, end: null };
-  openModal("📜 Transcript cutter", `<div class="stepmsg"><span class="spinner"></span>Loading transcript…</div>`, true);
+  openModal("Transcript cutter", `<div class="stepmsg"><span class="spinner"></span>Loading transcript…</div>`, true);
   try {
     const data = await api(`/api/episodes/${epId}/transcript`);
     state.cutter.segments = data.segments || [];
     renderCutter(scrollStart);
   } catch (error) {
-    modalBody().innerHTML = `<div class="stepmsg error">⚠ ${esc(error.message)}</div>`;
+    modalBody().innerHTML = `<div class="stepmsg error">${ic("alert")} ${esc(error.message)}</div>`;
   }
 }
 
@@ -1057,7 +1233,7 @@ function renderCutter(scrollStart = null) {
     </div>
     <div class="cutbar">
       <span id="cutRange" class="count-pill"></span>
-      <button class="btn primary small" onclick="cutFromCutter()">✂ Cut range</button>
+      <button class="btn primary small" onclick="cutFromCutter()">${ic("scissors")} Cut range</button>
     </div>`;
   updateCutLabel();
   if (scrollStart !== null) {
@@ -1127,7 +1303,7 @@ async function cutFromCutter() {
 
 // ---------------------------------------------------------------- dashboard
 async function openDashboard() {
-  openModal("🛠 Dashboard", `<div class="stepmsg"><span class="spinner"></span>Loading storage &amp; jobs…</div>`, true);
+  openModal("Dashboard", `<div class="stepmsg"><span class="spinner"></span>Loading storage &amp; jobs…</div>`, true);
   try {
     const [storage, jobs, health] = await Promise.all([
       api("/api/storage"), api("/api/jobs?limit=200"), api("/api/health"),
@@ -1137,7 +1313,7 @@ async function openDashboard() {
     state.health = health;
     modalBody().innerHTML = dashboardHtml();
   } catch (error) {
-    modalBody().innerHTML = `<div class="stepmsg error">⚠ ${esc(error.message)}</div>`;
+    modalBody().innerHTML = `<div class="stepmsg error">${ic("alert")} ${esc(error.message)}</div>`;
   }
 }
 
@@ -1155,8 +1331,10 @@ function dashboardHtml() {
 
   return `
     <div class="jobstatline">
-      <span>✅ ${done} done</span> · <span>❌ ${failed} failed</span> ·
-      <span>⏳ ${active} active</span>${cancelled ? ` · <span>🚫 ${cancelled} cancelled</span>` : ""}
+      <span class="chip ok">${ic("check")} ${done} done</span>
+      <span class="chip ${failed ? "bad" : ""}">${ic("x")} ${failed} failed</span>
+      <span class="chip">${ic("clock")} ${active} active</span>
+      ${cancelled ? `<span class="chip">${ic("alert")} ${cancelled} cancelled</span>` : ""}
     </div>
 
     <div class="dashgrid">
@@ -1172,10 +1350,10 @@ function dashboardHtml() {
     <div class="storagerows">
       ${["media", "clips", "thumbs", "subs"].map((name) => `
         <div class="storagerow">
-          <span class="sname">${name}</span>
+          <span class="sname">${ic("folder")} ${name}</span>
           <span class="smeta">${dirs[name]?.files ?? 0} files · ${fmtBytes(dirs[name]?.bytes)}</span>
           ${cleanTargets.includes(name)
-            ? `<button class="btn small" onclick="cleanStorage('${name}', this)">🧹 Clean</button>`
+            ? `<button class="btn small danger" onclick="cleanStorage('${name}', this)">${ic("trash")} Clean</button>`
             : `<span class="count-pill">kept for resumes</span>`}
         </div>`).join("")}
     </div>
@@ -1185,7 +1363,7 @@ function dashboardHtml() {
 
     <div class="minihead">Backup &amp; restore</div>
     <div class="cutbar">
-      <a class="btn small" href="/api/backup" download>⬇ Download backup</a>
+      <a class="btn small" href="/api/backup" download>${ic("download")} Download backup</a>
       <input type="file" id="restoreFile" accept="application/json,.json" onchange="restoreFromFile(this)">
       <span class="count-pill">restoring replaces everything</span>
     </div>
@@ -1199,9 +1377,9 @@ function dashboardHtml() {
           <span class="jmsg" title="${esc(job.message || job.error || "")}">${esc(trim(job.message || job.error || "", 54))}</span>
           <span class="jmode">${esc((job.params || {}).kind === "manual" ? "manual" : `${(job.params || {}).count || ""} auto`)}</span>
           ${job.status === "queued"
-            ? `<button class="btn small" title="Cancel before it starts" onclick="cancelJob('${job.id}')">✕</button>`
+            ? `<button class="btn small iconbtn" title="Cancel before it starts" aria-label="Cancel job" onclick="cancelJob('${job.id}')">${ic("x")}</button>`
             : (job.status === "done" || job.status === "error")
-              ? `<button class="btn small" onclick="retryJob('${job.id}')">↻ Retry</button>`
+              ? `<button class="btn small" title="Retry this job" onclick="retryJob('${job.id}')">${ic("retry")} Retry</button>`
               : ""}
         </div>`).join("") : `<div class="stepmsg">No jobs yet.</div>`}
     </div>`;
@@ -1270,6 +1448,418 @@ async function cancelJob(jobId) {
   refresh();
 }
 
+
+// ------------------------------------------------- v0.5.0 option helpers
+const BRAND_SWATCH = {
+  "qyro-pop": { fg: "#FFFFFF", edge: "#7C3AED", hi: "#22D3EE", label: "Qyro Pop" },
+  "qyro-minimal": { fg: "#F0F4FF", edge: "transparent", hi: "#7C3AED", label: "Qyro Minimal" },
+  "qyro-neon": { fg: "#22D3EE", edge: "#7C3AED", hi: "#FFFFFF", label: "Qyro Neon" },
+};
+const QUALITY_NOTE = {
+  fast: "720p — quickest render, fine for talking heads.",
+  full: "1080p — the everyday default.",
+  "1440p": "1440p — crisp, but slow on a phone and a bigger file.",
+};
+
+/* Uploaded music beds come from /api/state; the select always offers "none" so
+   a track can be dropped without opening the tools modal. */
+function trackOptions(current) {
+  const tracks = (state.data && state.data.audio_tracks) || [];
+  return `<option value=""${current ? "" : " selected"}>original audio</option>`
+    + tracks.map((t) => `<option value="${esc(t.id)}"${String(current) === String(t.id) ? " selected" : ""}>${esc(t.name)} · ${fmtDur(t.duration)}</option>`).join("");
+}
+
+/* Live mini-preview of the caption look, drawn with the same colours the ASS
+   writer uses. Cheap, and it makes the brand choice obvious on a phone. */
+function brandPreview(brand) {
+  const swatch = BRAND_SWATCH[brand];
+  if (!swatch) return "";
+  return `<div class="full">
+    <div class="brandpreview" style="--fg:${swatch.fg};--edge:${swatch.edge};--hi:${swatch.hi}">
+      <span>${esc(swatch.label)}</span>
+    </div>
+  </div>`;
+}
+
+/* The logo box is defined as fractions of the frame, so a 9:16 placeholder is
+   an honest preview of what delogo will be handed. */
+function logoPreview(opts) {
+  if (!opts.logo_preset || opts.logo_preset === "") return "";
+  const frac = { S: 0.11, M: 0.16, L: 0.22 }[opts.logo_size] || 0.16;
+  const margin = 1.2;
+  const style = (pos) => {
+    const base = `width:${(frac * 100).toFixed(1)}%;aspect-ratio:100/30;`;
+    if (pos === "topleft") return `${base}top:${margin}%;left:${margin}%;`;
+    if (pos === "topright") return `${base}top:${margin}%;right:${margin}%;`;
+    if (pos === "bottomleft") return `${base}bottom:${margin}%;left:${margin}%;`;
+    return `${base}bottom:${margin}%;right:${margin}%;`;
+  };
+  return `<div class="full">
+    <div class="logopreview"><span class="logobox" style="${style(opts.logo_preset)}"><span>${esc(opts.logo_preset)}</span></span></div>
+  </div>`;
+}
+
+function logoBoxFrom(opts) {
+  if (!opts.logo_preset) return null;
+  if (opts.logo_preset === "custom") {
+    const c = opts.logoCustom || {};
+    return {
+      preset: "custom",
+      x: c.x ?? 0.03, y: c.y ?? 0.03, w: c.w ?? 0.3, h: c.h ?? 0.1,
+      size: opts.logo_size || "M", feather: Number(opts.logo_feather) || 0,
+    };
+  }
+  return {
+    preset: opts.logo_preset,
+    size: opts.logo_size || "M",
+    feather: Number(opts.logo_feather) || 0,
+  };
+}
+
+
+// ------------------------------------------------- v0.5.0 tool modals
+async function openBeats(epId) {
+  openModal("Beat map", `<div class="stepmsg"><span class="spinner"></span>Measuring loudness peaks offline…</div>`, true);
+  try {
+    const data = await api(`/api/episodes/${epId}/beats`);
+    const beats = data.beats || [];
+    modalBody().innerHTML = `
+      <div class="stepmsg">${data.count} beat markers across ${fmtDur(data.duration)}
+        ${data.cached ? "· cached from the last scan" : "· scanned now"}</div>
+      ${data.reason ? `<div class="noticeline">${ic("alert")} ${esc(data.reason)}</div>` : ""}
+      <div class="beats">${beats.slice(0, 160).map((b) => `<span class="beat" title="${Number(b).toFixed(2)}s"></span>`).join("")}</div>
+      <div class="probegrid">
+        <div class="kv"><span>First beat</span><b>${beats.length ? fmtDur(beats[0]) : "—"}</b></div>
+        <div class="kv"><span>Spacing</span><b>${beats.length > 1 ? (beats[1] - beats[0]).toFixed(2) + "s apart" : "—"}</b></div>
+        <div class="kv"><span>Media</span><b title="${esc(data.media || "")}">${esc(trim(data.media || "none", 26))}</b></div>
+      </div>
+      <div class="cutbar">
+        <span class="count-pill">turn on “sync to beats” in Fine-tune to snap cut points</span>
+        <button class="btn small" id="beatsRescan">${ic("retry")} Rescan</button>
+      </div>`;
+    document.querySelector("#beatsRescan")?.addEventListener("click", () => {
+      api(`/api/episodes/${epId}/beats?refresh=1`).then(() => openBeats(epId)).catch((e) => toast(e.message, true));
+    });
+  } catch (error) {
+    modalBody().innerHTML = `<div class="stepmsg error">${ic("alert")} ${esc(error.message)}</div>`;
+  }
+}
+
+async function openInspector(clipId) {
+  openModal("Clip inspector", `<div class="stepmsg"><span class="spinner"></span>Probing the rendered file…</div>`, true);
+  try {
+    const info = await api(`/api/clips/${clipId}/probe`);
+    const kv = (label, value, title) => `<div class="kv"><span>${label}</span><b${title ? ` title="${esc(title)}"` : ""}>${esc(value)}</b></div>`;
+    modalBody().innerHTML = `
+      <div class="probegrid">
+        ${kv("Resolution", info.width && info.height ? `${info.width}\u00d7${info.height}` : "—")}
+        ${kv("Aspect", info.aspect || "—", info.orientation || "")}
+        ${kv("Frame rate", info.fps ? `${info.fps.toFixed(2)} fps` : "—")}
+        ${kv("Duration", info.duration ? `${info.duration.toFixed(2)} s` : "—")}
+        ${kv("Video codec", info.video_codec || "—")}
+        ${kv("Audio", info.audio_codec ? `${info.audio_codec}${info.sample_rate ? ` \u00b7 ${Math.round(info.sample_rate / 1000)} kHz` : ""}` : "none")}
+        ${kv("File size", info.size_bytes ? fmtBytes(info.size_bytes) : "—")}
+        ${kv("Quality preset", info.stored?.quality || "—")}
+        ${kv("Captions", info.stored?.captions_brand && info.stored.captions_brand !== "none" ? info.stored.captions_brand : "plain")}
+      </div>
+      ${info.missing ? `<div class="noticeline">${ic("alert")} The file is not on disk — the card is stale; re-render or delete it.</div>` : ""}
+      <div class="cutbar">
+        <a class="btn small" href="/api/clips/${clipId}/audio.mp3">${ic("music")} Audio (MP3)</a>
+        <button class="btn small" onclick="openThumbPicker('${clipId}')">${ic("image")} Thumbnail</button>
+        <a class="btn small" href="/api/clips/${clipId}/file" download="qyro-${clipId}.mp4">${ic("download")} Video</a>
+      </div>`;
+  } catch (error) {
+    modalBody().innerHTML = `<div class="stepmsg error">${ic("alert")} ${esc(error.message)}</div>`;
+  }
+}
+
+async function openThumbPicker(clipId) {
+  openModal("Choose a thumbnail", `<div class="stepmsg"><span class="spinner"></span>Pulling frames from the clip…</div>`, true);
+  try {
+    const data = await api(`/api/clips/${clipId}/thumb-candidates?n=${configN()}`);
+    const list = data.candidates || [];
+    modalBody().innerHTML = `
+      <div class="stepmsg">${list.length} frames spread across the clip. Tap one to make it the card poster.</div>
+      <div class="candgrid">
+        ${list.map((c) => `
+          <button class="cand" data-index="${c.index}">
+            <img src="${esc(c.url)}" alt="frame at ${Number(c.time).toFixed(1)}s" loading="lazy">
+            <span class="tagrow"><span>${fmtDur(c.time)}</span><span>${ic("check")}</span></span>
+          </button>`).join("")}
+      </div>`;
+    modalBody().querySelectorAll(".cand").forEach((btn) => {
+      btn.addEventListener("click", async () => {
+        btn.classList.add("on");
+        try {
+          await api(`/api/clips/${clipId}/thumb-pick`, {
+            method: "POST", body: JSON.stringify({ index: Number(btn.dataset.index) }),
+          });
+          toast("Thumbnail set");
+          closeModal();
+          refresh();
+        } catch (error) {
+          toast(error.message, true);
+          btn.classList.remove("on");
+        }
+      });
+    });
+  } catch (error) {
+    modalBody().innerHTML = `<div class="stepmsg error">${ic("alert")} ${esc(error.message)}</div>`;
+  }
+}
+
+function configN() { return 6; }
+
+async function openTitleLab(clipId) {
+  const clip = (state.data?.clips || []).find((item) => item.id === clipId);
+  const seed = clip ? `${clip.title}. ${(clip.reasons || []).join(". ")}` : "";
+  titleLabModal(clipId, seed, clip ? clip.profile || "viral" : "viral");
+}
+
+function titleLabModal(clipId, seed, profile) {
+  openModal(clipId ? "Title lab" : "Title lab — free text", `
+    <div class="stepmsg">Ten ways to say it, scored for ${profile === "viral" ? "the feed" : "this profile"}. Offline templates by default; a free AI key rewrites them.</div>
+    <textarea id="tlText" rows="4" placeholder="Paste the line, or the whole transcript slice…">${esc(seed)}</textarea>
+    <div class="cutbar">
+      <select id="tlProfile" class="sortsel">
+        ${[["viral", "Viral picks"], ["story", "Story arc"], ["facts", "Numbers & facts"], ["energy", "High energy"]]
+          .map(([v, l]) => `<option value="${v}"${v === profile ? " selected" : ""}>${l}</option>`).join("")}
+      </select>
+      <button class="btn primary small" id="tlGo">${ic("wand")} Make titles</button>
+      <span class="spacer"></span>
+      <span class="count-pill" id="tlEngine"></span>
+    </div>
+    <div id="tlOut"></div>`, true);
+  const go = () => runTitleLab(clipId);
+  document.querySelector("#tlGo").addEventListener("click", go);
+  document.querySelector("#tlProfile").addEventListener("change", go);
+  if (seed) go();
+}
+
+async function runTitleLab(clipId) {
+  const text = document.querySelector("#tlText").value.trim();
+  const profile = document.querySelector("#tlProfile").value;
+  const out = document.querySelector("#tlOut");
+  const engine = document.querySelector("#tlEngine");
+  if (!text) { out.innerHTML = `<div class="stepmsg error">${ic("alert")} Add a line of text first.</div>`; return; }
+  out.innerHTML = `<div class="stepmsg"><span class="spinner"></span>Writing…</div>`;
+  try {
+    const data = await api("/api/titles", {
+      method: "POST",
+      body: JSON.stringify({ text, profile, episode_id: clipId || undefined }),
+    });
+    engine.textContent = data.engine === "offline" ? "offline engine" : `${data.engine} engine`;
+    out.innerHTML = `
+      ${data.notice ? `<div class="noticeline">${ic("alert")} ${esc(data.notice)}</div>` : ""}
+      <div class="titlelab">
+        ${(data.titles || []).map((t) => `<div class="packtitle" data-copy="${esc(t)}">${esc(t)}</div>`).join("")}
+      </div>
+      <div class="tags">${(data.hashtags || []).map((t) => `<span class="tag">${esc(t)}</span>`).join("")}</div>
+      <div class="cutbar"><button class="btn small" id="tlCopyAll">${ic("copy")} Copy titles + tags</button></div>`;
+    out.querySelectorAll("[data-copy]").forEach((el) => el.addEventListener("click", async () => {
+      await copyText(el.dataset.copy);
+      toast("Title copied");
+    }));
+    document.querySelector("#tlCopyAll")?.addEventListener("click", async () => {
+      await copyText(`${(data.titles || []).join("\n")}\n\n${(data.hashtags || []).join(" ")}`);
+      toast("Copied");
+    });
+  } catch (error) {
+    out.innerHTML = `<div class="stepmsg error">${ic("alert")} ${esc(error.message)}</div>`;
+  }
+}
+
+function fileToB64(file) {
+  return new Promise((resolve, reject) => {
+    const fr = new FileReader();
+    fr.onload = () => resolve(String(fr.result).split(",")[1] || "");
+    fr.onerror = () => reject(new Error("Could not read that file"));
+    fr.readAsDataURL(file);
+  });
+}
+
+async function openTools() {
+  const tracks = (state.data && state.data.audio_tracks) || [];
+  openModal("Audio beds & offline tools", `
+    <div class="tabs">
+      <button class="tab on" data-tab="tracks">${ic("music")} Music beds</button>
+      <button class="tab" data-tab="titles">${ic("wand")} Title lab</button>
+      <button class="tab" data-tab="engine">${ic("sparkle")} Free AI engine</button>
+    </div>
+    <div class="tabpanel" data-panel="tracks">
+      <div class="stepmsg">Any MP3, M4A, WAV or OGG file on this device. Qyro loops it under the short — no cloud, no sample list.</div>
+      <label class="drop" id="trackDrop"><input type="file" id="trackFile" accept="audio/*">
+        ${ic("upload")} Tap to pick an audio file (up to 40 MB)</label>
+      <div class="tracklist" style="margin-top:12px">
+        ${tracks.length ? tracks.map((t) => `
+          <div class="trackrow">
+            ${ic("music")}
+            <span class="tname">${esc(t.name)}</span>
+            <span class="count-pill">${fmtDur(t.duration)} · ${fmtBytes(t.bytes)}</span>
+            <audio controls preload="none" src="/api/audio/${esc(t.id)}/file"></audio>
+          </div>`).join("") : `<div class="stepmsg">No beds yet — shorts keep their own audio.</div>`}
+      </div>
+    </div>
+    <div class="tabpanel" data-panel="titles" hidden>
+      <div class="stepmsg">Write a caption pack for any text, no clip needed.</div>
+      <div id="tlFree"></div>
+    </div>
+    <div class="tabpanel" data-panel="engine" hidden>
+      <div id="engNote"></div>
+      <div class="cutbar"><button class="btn small" id="engOpen">${ic("sliders")} Open settings</button></div>
+    </div>`, true);
+  modalBody().querySelectorAll(".tab").forEach((tab) => tab.addEventListener("click", () => {
+    modalBody().querySelectorAll(".tab").forEach((t) => t.classList.toggle("on", t === tab));
+    modalBody().querySelectorAll(".tabpanel").forEach((p) => {
+      p.hidden = p.dataset.panel !== tab.dataset.tab;
+    });
+  }));
+  const file = document.querySelector("#trackFile");
+  file.addEventListener("change", async () => {
+    const picked = file.files && file.files[0];
+    if (!picked) return;
+    try {
+      const b64 = await fileToB64(picked);
+      const result = await api("/api/audio", {
+        method: "POST", body: JSON.stringify({ name: picked.name, data_b64: b64 }),
+      });
+      toast(`“${result.name}” is ready — pick it in Fine-tune`);
+      refresh();
+      openTools();
+    } catch (error) {
+      toast(error.message, true);
+    }
+  });
+  const drop = document.querySelector("#trackDrop");
+  ["dragover", "dragenter"].forEach((evt) => drop.addEventListener(evt, (e) => {
+    e.preventDefault(); drop.classList.add("on");
+  }));
+  ["dragleave", "drop"].forEach((evt) => drop.addEventListener(evt, (e) => {
+    e.preventDefault(); drop.classList.remove("on");
+    if (evt === "drop" && e.dataTransfer?.files?.[0]) {
+      file.files = e.dataTransfer.files;
+      file.dispatchEvent(new Event("change"));
+    }
+  }));
+  document.querySelector("#engOpen").addEventListener("click", openSettings);
+  titleLabFree();
+  engineNote();
+}
+
+function titleLabFree() {
+  const host = document.querySelector("#tlFree");
+  if (!host) return;
+  host.innerHTML = `
+    <textarea id="tlText" rows="4" placeholder="Paste a transcript slice or a one-line thought…"></textarea>
+    <div class="cutbar">
+      <select id="tlProfile" class="sortsel">
+        <option value="viral">Viral picks</option><option value="story">Story arc</option>
+        <option value="facts">Numbers &amp; facts</option><option value="energy">High energy</option>
+      </select>
+      <button class="btn primary small" id="tlGo">${ic("wand")} Make titles</button>
+      <span class="spacer"></span><span class="count-pill" id="tlEngine"></span>
+    </div>
+    <div id="tlOut"></div>`;
+  document.querySelector("#tlGo").addEventListener("click", () => runTitleLab(null));
+}
+
+function engineNote() {
+  const host = document.querySelector("#engNote");
+  if (!host) return;
+  const eng = (state.data && state.data.engine) || { provider: "offline" };
+  host.innerHTML = `<div class="probegrid">
+      <div class="kv"><span>Engine</span><b>${esc(eng.provider || "offline")}</b></div>
+      <div class="kv"><span>Model</span><b>${esc(eng.model || "offline templates")}</b></div>
+      <div class="kv"><span>Keys</span><b>${eng.key_set ? "stored on this device" : "none set"}</b></div>
+    </div>
+    <div class="noticeline info">${ic("check")} Titles, hashtags and polish fall back to the offline engine on any failure — Qyro never needs an account.</div>`;
+}
+
+// ------------------------------------------------------------- settings
+const PROVIDER_OPTIONS = [
+  ["offline", "Offline templates (free, no key)"],
+  ["gemini", "Google AI Studio — free key"],
+  ["groq", "Groq — free key"],
+  ["custom", "Custom OpenAI-compatible URL"],
+];
+
+async function openSettings() {
+  const s = (state.data && state.data.settings) || {};
+  const eng = (state.data && state.data.engine) || {};
+  openModal("Qyro settings", `
+    <div class="minihead">Free AI engine (optional)</div>
+    <div class="stepmsg">Qyro writes titles offline and needs no account. If you add a free key, titles, hashtags and the upload pack get an AI rewrite — and any failure quietly falls back to offline text.</div>
+    <div class="advgrid" style="margin-top:10px">
+      <label class="full">Provider <select id="setProvider">${chosen(PROVIDER_OPTIONS, eng.provider || "offline")}</select></label>
+      <label>Model <input id="setModel" type="text" maxlength="120" placeholder="gemini-2.0-flash / llama-3.3-70b" value="${esc(eng.model || "")}"></label>
+      <label>Base URL (custom only) <input id="setBase" type="text" maxlength="300" placeholder="http://127.0.0.1:11434/v1" value="${esc(eng.base_url || "")}"></label>
+      <label>Google AI Studio key <input id="setGemini" type="password" maxlength="400" placeholder="${s.gemini_key_set ? "saved \u2014 type to replace" : "AIza\u2026"}" autocomplete="off"></label>
+      <label>Groq key <input id="setGroq" type="password" maxlength="400" placeholder="${s.groq_key_set ? "saved \u2014 type to replace" : "gsk_\u2026"}" autocomplete="off"></label>
+      <label>OpenAI-compatible key <input id="setAi" type="password" maxlength="400" placeholder="${s.ai_key_set ? "saved \u2014 type to replace" : "optional"}" autocomplete="off"></label>
+    </div>
+    <div class="noticeline info">${ic("check")} Keys live only in <code>data/state.json</code> on this device. They are never echoed back by the API, never written to a log, and never leave the machine except to the provider you chose.</div>
+    <div class="minihead">Defaults for new episodes</div>
+    <div class="advgrid">
+      <label>Quality <select id="setQuality">${chosen(QUALITY_OPTIONS, baseDefaults.quality)}</select></label>
+      <label>Caption brand <select id="setBrand">${chosen(BRAND_OPTIONS, baseDefaults.captions_brand)}</select></label>
+      <label class="full"><span class="hint" id="qualHint"></span></label>
+    </div>
+    <div class="cutbar">
+      <button class="btn primary small" id="setSave">${ic("check")} Save settings</button>
+      <span class="spacer"></span>
+      <span class="count-pill">${esc((state.health || {}).version || "")}</span>
+    </div>`, true);
+  const sync = () => {
+    const el = document.querySelector("#setQuality");
+    const note = document.querySelector("#qualHint");
+    if (el && note) note.textContent = QUALITY_NOTE[el.value] || "";
+  };
+  document.querySelector("#setQuality").addEventListener("change", sync);
+  sync();
+  document.querySelector("#setSave").addEventListener("click", async (event) => {
+    const btn = event.currentTarget;
+    const body = {
+      ai_provider: document.querySelector("#setProvider").value,
+      ai_model: document.querySelector("#setModel").value.trim(),
+      ai_base_url: document.querySelector("#setBase").value.trim(),
+    };
+    const secret = (id, key) => {
+      const value = document.querySelector(id).value.trim();
+      if (value) body[key] = value;      // blank means "leave the stored key alone"
+    };
+    secret("#setGemini", "gemini_key");
+    secret("#setGroq", "groq_key");
+    secret("#setAi", "ai_key");
+    btn.disabled = true;
+    try {
+      await api("/api/settings", { method: "POST", body: JSON.stringify(body) });
+      const quality = document.querySelector("#setQuality").value;
+      const captions_brand = document.querySelector("#setBrand").value;
+      baseDefaults = { ...baseDefaults, quality, captions_brand };
+      presetOverlay = { ...presetOverlay, quality, captions_brand };
+      toast("Settings saved");
+      closeModal();
+      refresh();
+    } catch (error) {
+      toast(error.message, true);
+      btn.disabled = false;
+    }
+  });
+}
+
+function renderEngineHint() {
+  const el = document.querySelector("#engineHint");
+  if (!el) return;
+  const eng = (state.data && state.data.engine) || {};
+  if (eng.provider && eng.provider !== "offline") {
+    el.className = "hint ok";
+    el.innerHTML = `${ic("sparkle")} free AI engine: ${esc(eng.provider)}`;
+  } else {
+    el.className = "hint";
+    el.textContent = "offline titles · add a free key in settings for AI rewrites";
+  }
+}
+
 // ---------------------------------------------------------------- polling
 function fastPoll() {
   clearInterval(pollTimer);
@@ -1287,6 +1877,10 @@ function fastPoll() {
 document.addEventListener("change", (event) => {
   const card = event.target?.closest?.(".episode");
   if (card) rememberCardOpts(card);
+  // Selects that change what the card *shows* (brand swatch, logo box,
+  // quality warning) re-render the list; the open/closed state survives.
+  if (card && /^(opt-brand|opt-logo|opt-logo-size|opt-quality)$/.test(
+      (event.target.className || "").split(/\s+/).join("|"))) renderEpisodes();
 });
 
 document.addEventListener("input", (event) => {
@@ -1298,6 +1892,18 @@ document.addEventListener("input", (event) => {
     rememberManual(card);
   } else {
     rememberCardOpts(card);
+  }
+  // range sliders show their value without a full re-render (no focus loss)
+  const target = event.target;
+  if (target.classList.contains("opt-silence-noise")) {
+    const out = card?.querySelector(".out-silence-noise");
+    if (out) out.textContent = `${Number(target.value).toFixed(0)} dB`;
+  } else if (target.classList.contains("opt-silence-min")) {
+    const out = card?.querySelector(".out-silence-min");
+    if (out) out.textContent = `${Number(target.value).toFixed(1)} s`;
+  } else if (target.classList.contains("opt-logo-feather")) {
+    const out = card?.querySelector(".out-logo-feather");
+    if (out) out.textContent = `${target.value}px`;
   }
 });
 
@@ -1335,6 +1941,12 @@ window.addEventListener("DOMContentLoaded", async () => {
   $("#clipSearch").addEventListener("input", renderShorts);
   $("#clipSort").addEventListener("change", renderShorts);
   $("#zipBtn").addEventListener("click", downloadZip);
+  $("#toolsBtn").addEventListener("click", openTools);
+  $("#settingsBtn").addEventListener("click", openSettings);
+  hydrateIcons();
+  if ("serviceWorker" in navigator && location.protocol.startsWith("http")) {
+    navigator.serviceWorker.register("/sw.js").catch(() => {});
+  }
 
   $("#playlistUrl").addEventListener("keydown", (event) => {
     if (event.key === "Enter") loadPlaylist();
@@ -1375,3 +1987,9 @@ window.restoreFromFile = restoreFromFile;
 window.retryJob = retryJob;
 window.cancelJob = cancelJob;
 window.syncCardSelect = syncCardSelect;
+window.openBeats = openBeats;
+window.openInspector = openInspector;
+window.openThumbPicker = openThumbPicker;
+window.openTitleLab = openTitleLab;
+window.openTools = openTools;
+window.openSettings = openSettings;

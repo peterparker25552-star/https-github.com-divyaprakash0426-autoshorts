@@ -12,7 +12,8 @@ import traceback
 import uuid
 from pathlib import Path
 
-from . import config, demo, highlights, maintenance, titles, youtube
+from . import audioswap, beats, config, demo, engine, highlights, logofx
+from . import maintenance, titles, youtube
 from .ffmpeg import (
     extract_thumbnail,
     loudness_waveform,
@@ -21,6 +22,20 @@ from .ffmpeg import (
 )
 from .store import Store
 from .transcripts import Segment, segments_for_window, to_sentences
+
+
+
+
+def _bounded(value, default: float, bounds: tuple[float, float]) -> float:
+    """Float clamp for the silence tuner (never fails a long render)."""
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return float(default)
+    lo, hi = bounds
+    if not lo <= number <= hi:
+        return float(default)
+    return number
 
 
 class Pipeline:
@@ -117,6 +132,9 @@ class Pipeline:
         quality = str(params.get("quality") or config.DEFAULT_QUALITY)
         if quality not in config.RENDER_HEIGHTS:
             quality = config.DEFAULT_QUALITY
+        brand = str(params.get("captions_brand") or config.DEFAULT_CAPTION_BRAND)
+        if brand not in config.CAPTION_BRANDS:
+            brand = config.DEFAULT_CAPTION_BRAND
         fmt = str(params.get("format") or config.DEFAULT_FORMAT)
         if fmt not in config.OUTPUT_SIZES:
             fmt = config.DEFAULT_FORMAT
@@ -135,6 +153,23 @@ class Pipeline:
         lo, hi = config.SPEED_RANGE
         if not lo <= speed <= hi:
             speed = config.DEFAULT_SPEED
+        # T4 logo remover: a bad spec must never stop a render, so it is
+        # re-validated here (the API already 422'd it) and dropped on error.
+        logo = None
+        raw_logo = params.get("logo_box")
+        if isinstance(raw_logo, dict) and raw_logo:
+            try:
+                logo = logofx.clean_spec(raw_logo)
+            except Exception:
+                logo = None
+        # T3 audio swap: a track deleted after queueing just means "no swap".
+        track = None
+        track_id = params.get("audio_track")
+        if isinstance(track_id, str) and track_id:
+            track = audioswap.track_file(track_id)
+        mix = str(params.get("audio_mix") or config.DEFAULT_AUDIO_MIX)
+        if mix not in config.AUDIO_MIXES:
+            mix = config.DEFAULT_AUDIO_MIX
         width, height = config.OUTPUT_SIZES[fmt][quality]
         return {
             "style": style,
@@ -145,11 +180,26 @@ class Pipeline:
             "captions": captions,
             "captions_pos": captions_pos,
             "captions_box": bool(params.get("captions_box", False)),
+            "captions_brand": brand,
             "speed": speed,
             "progress": bool(params.get("progress", False)),
             "silence": bool(params.get("silence", False)),
             "loud": bool(params.get("loud", False)),
+            "logo_box": logo,
+            "sync_beats": bool(params.get("sync_beats", False)),
+            "audio_track": track_id if track else None,
+            "audio_track_path": str(track) if track else None,
+            "audio_mix": mix if track else config.DEFAULT_AUDIO_MIX,
+            "silence_noise": _bounded(
+                params.get("silence_noise"), config.DEFAULT_SILENCE_NOISE,
+                config.SILENCE_NOISE_RANGE,
+            ),
+            "silence_min": _bounded(
+                params.get("silence_min"), config.DEFAULT_SILENCE_MIN,
+                config.SILENCE_MIN_RANGE,
+            ),
         }
+
 
     @staticmethod
     def _prepare_media(ep: dict) -> Path:
@@ -203,6 +253,9 @@ class Pipeline:
         # 3) source media -------------------------------------------------
         self._progress(self.store, job_id, "media", 0.35, "Preparing source media…")
         media = self._prepare_media(ep)
+
+        # 3b) T3 beat sync - snap the chosen windows onto the loudness peaks.
+        moments = self._snap_moments(ep, media, moments, settings, job_id)
 
         # 4) render clips -------------------------------------------------
         total = len(moments)
@@ -261,8 +314,60 @@ class Pipeline:
 
         # 4) render -------------------------------------------------------
         self._progress(self.store, job_id, "render", 0.45, "Rendering manual clip…")
+        # 3b) T3 beat sync also honours a manual cut - the range is the user's,
+        # the boundary just lands on the nearest downbeat.
+        snapped = self._snap_moments(ep, media, [moment], settings, job_id)
+        moment = snapped[0] if snapped else moment
+
+        # 4) render -------------------------------------------------------
         self._render_one(ep, media, segments, moment, settings, profile=profile)
         self._progress(self.store, job_id, "done", 1.0, "Generated manual clip")
+
+    # ------------------------------------------------------------------
+    def _snap_moments(self, ep, media, moments, settings: dict, job_id: str) -> list:
+        """Move each window boundary to the nearest beat (T3).
+
+        Fully optional and fully safe: no toggle, no media, no beats or any
+        analysis error returns the moments untouched, so a render never depends
+        on beat detection succeeding.
+        """
+        if not settings.get("sync_beats") or not moments:
+            return moments
+        try:
+            info = beats.beats_for_media(media)
+        except Exception:
+            return moments
+        markers = info.get("beats") or []
+        if not markers:
+            return moments
+        out = []
+        moved = 0
+        for moment in moments:
+            start, end, changed = beats.snap_to_beats(moment.start, moment.end, markers)
+            if not changed:
+                out.append(moment)
+                continue
+            moved += 1
+            out.append(highlights.Highlight(
+                start=start,
+                end=end,
+                score=moment.score,
+                title=moment.title,
+                reasons=list(moment.reasons)
+                + [f"beat-synced ({len(markers)} markers)"],
+                sentences=[
+                    sentence for sentence in (moment.sentences or [])
+                    if sentence.end > start and sentence.start < end
+                ] or moment.sentences,
+                signals=moment.signals,
+            ))
+        try:
+            self.store.update_job(
+                job_id, message=f"Beat sync moved {moved} of {len(moments)} cut(s)"
+            )
+        except Exception:
+            pass
+        return out
 
     @staticmethod
     def _clamp_manual_range(start: float, end: float, episode_duration: float) -> tuple[float, float]:
@@ -303,6 +408,7 @@ class Pipeline:
             speed=settings["speed"],
             pos=settings["captions_pos"],
             box=settings["captions_box"],
+            brand=settings.get("captions_brand", config.DEFAULT_CAPTION_BRAND),
         )
         clip_path = config.CLIPS_DIR / f"{clip_id}.mp4"
         render_clip(
@@ -319,6 +425,11 @@ class Pipeline:
             silence=settings["silence"],
             loud=settings["loud"],
             fmt=settings["format"],
+            logo=settings.get("logo_box"),
+            track=settings.get("audio_track_path"),
+            audio_mix=settings.get("audio_mix", config.DEFAULT_AUDIO_MIX),
+            silence_noise=settings.get("silence_noise", config.DEFAULT_SILENCE_NOISE),
+            silence_min=settings.get("silence_min", config.DEFAULT_SILENCE_MIN),
         )
 
         # 24 loudness bars for the card UI (empty list on any failure).
@@ -344,6 +455,13 @@ class Pipeline:
             profile,
             duration,
         )
+        # T5: when a provider is configured the pack is rewritten through the
+        # engine (short timeout); any failure keeps these offline words.
+        pack, engine_name, engine_notice = engine.refine_pack(
+            pack,
+            f"{ep.get('title') or ''} | {moment.title} | {duration:.0f}s clip",
+            self.store.settings(),
+        )
 
         render_opts = {
             "style": settings["style"],
@@ -352,10 +470,17 @@ class Pipeline:
             "captions": settings["captions"],
             "captions_pos": settings["captions_pos"],
             "captions_box": settings["captions_box"],
+            "captions_brand": settings["captions_brand"],
             "speed": settings["speed"],
             "progress": settings["progress"],
             "silence": settings["silence"],
             "loud": settings["loud"],
+            "logo_box": settings["logo_box"],
+            "sync_beats": settings["sync_beats"],
+            "audio_track": settings["audio_track"],
+            "audio_mix": settings["audio_mix"],
+            "silence_noise": settings["silence_noise"],
+            "silence_min": settings["silence_min"],
         }
         return self.store.add_clip(
             {
@@ -375,15 +500,24 @@ class Pipeline:
                 "captions": settings["captions"],
                 "captions_pos": settings["captions_pos"],
                 "captions_box": settings["captions_box"],
+                "captions_brand": settings["captions_brand"],
                 "quality": settings["quality"],
                 "speed": settings["speed"],
                 "progress": settings["progress"],
                 "silence": settings["silence"],
                 "loud": settings["loud"],
+                "sync_beats": settings["sync_beats"],
+                "audio_mix": settings["audio_mix"],
+                "logo_box": settings["logo_box"],
                 "width": settings["width"],
                 "height": settings["height"],
                 "render": dict(render_opts),
                 "waveform": waveform,
+                "audio_track": settings["audio_track"],
+                "logo": logofx.describe(settings["logo_box"], settings["width"],
+                                        settings["height"]),
+                "engine": engine_name,
+                "engine_notice": engine_notice,
                 "file": clip_path.name,
                 "thumb": thumb_path.name if thumb_path else None,
             }

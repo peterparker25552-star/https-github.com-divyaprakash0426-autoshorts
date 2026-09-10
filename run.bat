@@ -1,6 +1,6 @@
 @echo off
 REM ============================================================
-REM   AutoShorts - start the app (Windows)
+REM   Qyro - start the app (Windows)
 REM ============================================================
 if not exist .venv (
   echo Please run install.bat first.
@@ -9,7 +9,7 @@ if not exist .venv (
 )
 call .venv\Scripts\activate.bat
 echo.
-echo   AutoShorts is starting... keep this window OPEN.
+echo   Qyro is starting... keep this window OPEN.
 echo   Open http://localhost:8000 in your browser.
 echo   To stop the app, close this window (or press Ctrl+C).
 echo.

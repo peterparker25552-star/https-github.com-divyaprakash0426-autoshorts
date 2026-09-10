@@ -14,6 +14,7 @@ import uuid
 from pathlib import Path
 
 from . import config
+from . import logofx
 from .transcripts import Segment
 
 # libx264/aac output settings shared by every render path.
@@ -45,6 +46,11 @@ def _run(args: list[str], timeout: int = 900) -> subprocess.CompletedProcess:
             f"ffmpeg failed: {(proc.stderr or '').strip()[-400:]}"
         )
     return proc
+
+
+def run_ffmpeg(args: list[str], timeout: int = 900) -> subprocess.CompletedProcess:
+    """Public alias of :func:`_run` for sibling modules (audio extract, tools)."""
+    return _run(args, timeout=timeout)
 
 
 def probe_duration(path: Path) -> float | None:
@@ -171,6 +177,45 @@ def _style_params(caption_style: str, play_h: int) -> dict:
     }
 
 
+# The default word-pop accent (yellow) when a brand preset says nothing.
+_POP_EMPHASIS = "&H0000FFFF"
+
+
+def brand_bundle(brand: str | None) -> dict | None:
+    """Look up a caption brand preset; ``None`` for ``none``/unknown/bad input."""
+    if not isinstance(brand, str):
+        return None
+    return config.CAPTION_BRAND_PRESETS.get(brand.strip().lower())
+
+
+def brand_style_params(brand: str | None, caption_style: str, play_h: int) -> dict:
+    """Style params with a brand bundle (size/colour/outline) folded in.
+
+    Pure function so the preset math is unit-testable without ffmpeg: the brand
+    scales the base style's size, replaces the outline thickness rule and
+    carries the ASS colours plus the ``pop``/``box``/``pos`` hints.
+    """
+    params = _style_params(caption_style, play_h)
+    bundle = brand_bundle(brand)
+    if not bundle:
+        return params
+    size = max(config.CAPTION_MIN_FONT,
+               int(round(params["font_size"] * float(bundle["font_size_scale"]))))
+    params["font_size"] = size
+    params["outline"] = max(2, int(size * 0.09))
+    params["bold"] = int(bundle.get("bold", params["bold"]))
+    params["primary"] = bundle["primary"]
+    params["outline_colour"] = bundle["outline_colour"]
+    params["emphasis"] = bundle["emphasis"]
+    params["brand_box"] = bool(bundle.get("box"))
+    params["brand_pos"] = str(bundle.get("pos", "standard"))
+    params["brand_pop"] = bool(bundle.get("pop"))
+    params["name"] = {"qyro-pop": "QPop", "qyro-minimal": "QMin",
+                      "qyro-neon": "QNeon"}.get(
+        str(brand).strip().lower(), params["name"])
+    return params
+
+
 # Rough average glyph width for DejaVu Sans as a fraction of the font size —
 # good enough to decide when a long word would overflow the frame.
 _CHAR_WIDTH_FACTOR = 0.62
@@ -204,6 +249,9 @@ def _ass_header(play_w: int, play_h: int, params: dict, box: bool = False) -> st
     else:
         outline_colour = "&H00000000"
         back_colour = "&H64000000"
+    # A brand preset may carry its own colours; otherwise the v0.4.0 defaults.
+    primary = str(params.get("primary") or "&H00FFFFFF")
+    outline_colour = str(params.get("outline_colour") or outline_colour)
     return (
         "[Script Info]\n"
         "ScriptType: v4.00+\n"
@@ -217,7 +265,7 @@ def _ass_header(play_w: int, play_h: int, params: dict, box: bool = False) -> st
         " ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment,"
         " MarginL, MarginR, MarginV, Encoding\n"
         f"Style: {params['name']},{config.CAPTION_FONT},{params['font_size']},"
-        f"&H00FFFFFF,&H00FFFFFF,{outline_colour},{back_colour},{params['bold']},0,0,0,"
+        f"{primary},{primary},{outline_colour},{back_colour},{params['bold']},0,0,0,"
         f"100,100,0,0,{border_style},{params['outline']},1,2,60,60,{params['margin_v']},1\n\n"
         "[Events]\n"
         "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV,"
@@ -235,8 +283,9 @@ def make_ass(
     words_per_caption: int = config.CAPTION_WORDS_PER_LINE,
     caption_style: str = config.DEFAULT_CAPTIONS,
     speed: float = config.DEFAULT_SPEED,
-    pos: str = config.DEFAULT_CAPTIONS_POS,
-    box: bool = config.DEFAULT_CAPTIONS_BOX,
+    pos: str | None = None,
+    box: bool | None = None,
+    brand: str = config.DEFAULT_CAPTION_BRAND,
 ) -> Path:
     """Build an ASS subtitle file for [clip_start, clip_end], 0-based times.
 
@@ -248,10 +297,17 @@ def make_ass(
     * ``minimal`` — small lower-third line, original capitalisation
 
     ``pos`` — ``standard`` keeps the style's usual bottom margin, ``low``
-    lowers MarginV toward the frame edge (thumb-safe zones).
+    lowers MarginV toward the frame edge (thumb-safe zones). ``None`` (the
+    default) lets a caption brand choose, then falls back to ``standard``.
 
     ``box`` — draws a BackgroundStyle box (BorderStyle 3 with a near-opaque
     BackColour) instead of a plain outline (BorderStyle 1).
+
+    ``brand`` (T2) — a Qyro caption brand preset (``qyro-pop``,
+    ``qyro-minimal``, ``qyro-neon``) layered on top of the style: it resizes,
+    recolours and re-outlines the base look, may force the box, may move the
+    line, and switches word-pop timing on for chunked styles. ``none`` (the
+    default) reproduces the v0.4.0 file byte-for-byte.
 
     Font auto-fit shrinks the style font whenever the longest word in the clip
     would overflow the frame width (never below
@@ -268,7 +324,22 @@ def make_ass(
     if rate <= 0:
         rate = 1.0
 
-    params = _style_params(style, play_h)
+    bundle = brand_bundle(brand)
+    params = brand_style_params(brand, style, play_h)
+    # ``pos``/``box`` are optional here: ``None`` means "the caller did not
+    # choose", so a brand bundle may supply them. Anything explicit — what the
+    # pipeline always passes after render_opts_from resolved the request —
+    # wins, which is how "Qyro Neon with my box off" keeps working.
+    if bundle:
+        if box is None and bundle.get("box"):
+            box = True
+        if pos is None and bundle.get("pos"):
+            pos = str(bundle["pos"])
+    if pos is None:
+        pos = config.DEFAULT_CAPTIONS_POS
+    if box is None:
+        box = config.DEFAULT_CAPTIONS_BOX
+    word_pop = style == "pop" or bool(bundle and bundle.get("pop"))
     if str(pos) == "low":
         params["margin_v"] = params["low_margin_v"]
     window = max(float(clip_end) - float(clip_start), 0.01)
@@ -287,6 +358,8 @@ def make_ass(
             group = max(words_per_caption * 2, 6)
         elif style == "pop":
             group = max(1, min(words_per_caption, 3))
+        if word_pop and style != "pop":
+            group = max(1, min(words_per_caption, 3))
         for offset in range(0, len(words), group):
             part = words[offset : offset + group]
             frac0 = offset / len(words)
@@ -302,9 +375,10 @@ def make_ass(
         fitted = autofit_fontsize(params["font_size"], longest, play_w)
         if fitted < params["font_size"]:
             params["font_size"] = fitted
-            params["outline"] = max(1, fitted // 18)
+            params["outline"] = max(1, fitted // (11 if bundle else 18))
         big_size = int(params["font_size"] * 1.3)
 
+    emphasis = str(params.get("emphasis") or _POP_EMPHASIS)
     events: list[str] = []
 
     def emit(rel_start: float, rel_end: float, text: str) -> None:
@@ -321,12 +395,12 @@ def make_ass(
         if rel_end - rel_start < 0.15:
             rel_end = min(window, rel_start + 0.4)
 
-        if style == "pop":
+        if word_pop:
             span = max(rel_end - rel_start, 0.2) / len(part)
             for index, word in enumerate(part):
                 piece = [_ass_escape(other) for other in part]
                 piece[index] = (
-                    f"{{\\c&H0000FFFF&\\b1\\fs{big_size}}}"
+                    f"{{\\c{emphasis}&\\b1\\fs{big_size}}}"
                     f"{_ass_escape(word)}{{\\r}}"
                 )
                 emit(
@@ -798,11 +872,14 @@ def build_concat_filter(
     ranges: list[tuple[float, float]],
     speed: float = config.DEFAULT_SPEED,
     audio: bool = True,
+    vin: str = "0:v",
+    ain: str = "0:a",
 ) -> str:
     """trim + concat the kept ranges into ``[ccv][cca]`` (``[ccv]`` w/o audio).
 
     ``speed`` is applied per trimmed segment (``setpts``/``atempo``) so the
-    concatenated stream is already at final speed.
+    concatenated stream is already at final speed. ``vin``/``ain`` let the
+    caller feed a pre-processed input (the logo stage renames ``0:v``).
     """
     try:
         rate = float(speed)
@@ -814,13 +891,13 @@ def build_concat_filter(
     chains: list[str] = []
     labels: list[str] = []
     for index, (start, end) in enumerate(ranges):
-        video = f"[0:v]trim=start={start:.3f}:end={end:.3f},setpts=PTS-STARTPTS"
+        video = f"[{vin}]trim=start={start:.3f}:end={end:.3f},setpts=PTS-STARTPTS"
         if abs(rate - 1.0) > 1e-9:
             video += f",setpts=PTS/{rate:g}"
         chains.append(f"{video}[v{index}]")
         if audio:
             audio_chain = (
-                f"[0:a]atrim=start={start:.3f}:end={end:.3f},"
+                f"[{ain}]atrim=start={start:.3f}:end={end:.3f},"
                 "asetpts=PTS-STARTPTS"
             )
             if abs(rate - 1.0) > 1e-9:
@@ -962,6 +1039,62 @@ def render_clip(
     silence: bool = False,
     loud: bool = False,
     fmt: str = config.DEFAULT_FORMAT,
+    logo: dict | None = None,
+    track: Path | str | None = None,
+    audio_mix: str = config.DEFAULT_AUDIO_MIX,
+    silence_noise: float = config.DEFAULT_SILENCE_NOISE,
+    silence_min: float = config.DEFAULT_SILENCE_MIN,
+) -> Path:
+    """Render one short, degrading *optional* stages instead of failing.
+
+    :func:`_render_clip` does the work. This wrapper exists for the v0.5.0
+    promise that nothing may break: if the logo pass or the audio swap is what
+    ffmpeg choked on, the same clip is retried without that stage (logo, then
+    track, then both), so a bad box or an unreadable music file costs a
+    feature, never the short.
+    """
+    base = dict(
+        ass_path=ass_path, style=style, width=width, height=height, speed=speed,
+        progress=progress, silence=silence, loud=loud, fmt=fmt,
+        audio_mix=audio_mix, silence_noise=silence_noise, silence_min=silence_min,
+    )
+    variants: list[tuple[dict | None, Path | str | None]] = [(logo, track)]
+    if logo:
+        variants.append((None, track))
+    if track:
+        variants.append((logo, None))
+    if logo and track:
+        variants.append((None, None))
+    for index, (logo_try, track_try) in enumerate(variants):
+        try:
+            return _render_clip(Path(src), float(start), float(end), Path(out),
+                                logo=logo_try, track=track_try, **base)
+        except RuntimeError:
+            if index + 1 >= len(variants):
+                raise
+            continue
+    raise RuntimeError("ffmpeg failed while rendering a clip.")
+
+
+def _render_clip(
+    src: Path,
+    start: float,
+    end: float,
+    out: Path,
+    ass_path: Path | str | None = None,
+    style: str = config.DEFAULT_STYLE,
+    width: int = 720,
+    height: int = 1280,
+    speed: float = config.DEFAULT_SPEED,
+    progress: bool = False,
+    silence: bool = False,
+    loud: bool = False,
+    fmt: str = config.DEFAULT_FORMAT,
+    logo: dict | None = None,
+    track: Path | str | None = None,
+    audio_mix: str = config.DEFAULT_AUDIO_MIX,
+    silence_noise: float = config.DEFAULT_SILENCE_NOISE,
+    silence_min: float = config.DEFAULT_SILENCE_MIN,
 ) -> Path:
     """Cut ``[start, end]`` out of ``src`` into a captioned short.
 
@@ -976,9 +1109,18 @@ def render_clip(
     are measured on a scaled proxy, remapped through the silence cuts + speed
     onto the output timeline, and baked into a stepped numeric crop
     expression. Any analysis failure degrades to a static center crop.
+
+    v0.5.0 additions, all optional and all safe to ignore:
+
+    * ``logo`` — a validated ``logo_box`` spec. The removal filter is spliced
+      in **first** (on the source frame, before framing/tracking) so the mark
+      is gone before anything scales it; ``delogo`` with a ``boxblur`` fallback.
+    * ``track`` + ``audio_mix`` — T3 audio swap. ``replace`` drops the clip's
+      own audio and uses the track (trimmed to length, loudness matched);
+      ``duck`` keeps the original at 20% with the track on top.
+    * ``silence_noise`` / ``silence_min`` — T6 silence tuner: the dB floor and
+      minimum pause length handed to ``silencedetect``.
     """
-    src = Path(src)
-    out = Path(out)
     window = max(float(end) - float(start), 0.5)
     try:
         rate = float(speed)
@@ -987,6 +1129,9 @@ def render_clip(
     if rate <= 0:
         rate = 1.0
 
+    src_size = probe_video_size(src)
+    src_w, src_h = src_size if src_size else (0, 0)
+
     def smart_plan(keeps: list[tuple[float, float]] | None):
         if style != "smart" or fmt == "wide":
             return None
@@ -994,7 +1139,19 @@ def render_clip(
                                      width, height, keeps, rate)
 
     audio_ok = has_audio(src)
-    afilter = audio_filter(rate, loud) if audio_ok else ""
+    track_path = Path(track) if track else None
+    track_ok = bool(track_path and track_path.is_file())
+
+    def logo_prefix(vin: str) -> tuple[str, str]:
+        """(graph prefix, input label) for the logo pass in source space."""
+        if not logo or src_w <= 0 or src_h <= 0:
+            return "", vin
+        stage = logofx.logo_stage(logo, src_w, src_h, vin=vin)
+        if not stage:
+            return "", vin
+        return stage[0] + ";", stage[1]
+
+    afilter = audio_filter(rate, loud) if (audio_ok and not track_ok) else ""
     scratch: list[Path] = []
 
     try:
@@ -1002,7 +1159,9 @@ def render_clip(
             cut_path = config.MEDIA_DIR / f".cut-{uuid.uuid4().hex[:10]}.mp4"
             scratch.append(cut_path)
             cut_window(src, float(start), float(end), cut_path)
-            silences = detect_silences(cut_path)
+            silences = detect_silences(
+                cut_path, min_dur=silence_min, noise=f"{float(silence_noise):g}dB"
+            )
             removed = sum(b - a for a, b in silences)
             ranges = invert_ranges(silences, 0.0, window) if silences else []
             if removed >= MIN_SILENCE_REMOVED and ranges:
@@ -1012,18 +1171,37 @@ def render_clip(
                     scratch.append(mapped_ass)
                     remap_ass_file(ass_path, ranges, mapped_ass, speed=rate)
                 out_dur = sum(b - a for a, b in ranges) / rate
-                graph = build_concat_filter(ranges, speed=rate, audio=audio_ok)
+                # The original bed only needs cutting when it survives (no
+                # track, or ducking under one); ``replace`` skips the work.
+                needs_source_audio = audio_ok and (not track_ok or audio_mix == "duck")
+                prefix, vin = logo_prefix("0:v")
+                graph = build_concat_filter(
+                    ranges, speed=rate, audio=needs_source_audio, vin=vin
+                )
                 graph += ";" + video_chain(
                     style, width, height, mapped_ass, out_dur, progress,
                     vin="ccv", fmt=fmt, smart=smart_plan(ranges), speed=1.0,
                 )
                 audio_label: str | None = None
-                if audio_ok:
+                if track_ok:
+                    from . import audioswap
+
+                    plan = audioswap.mix_plan(
+                        audio_mix, out_dur,
+                        source_label="cca" if needs_source_audio else None,
+                        speed=1.0, loud=loud,
+                    )
+                    graph += ";" + plan["graph"]
+                    audio_label = plan["label"]
+                elif needs_source_audio:
                     audio_label = "[cca]"
                     if loud:
                         graph += ";[cca]loudnorm=I=-16:TP=-1.5:LRA=11[a]"
                         audio_label = "[a]"
-                args = ["-i", str(cut_path), "-filter_complex", graph, "-map", "[v]"]
+                args = ["-i", str(cut_path)]
+                if track_ok:
+                    args += ["-stream_loop", "-1", "-i", str(track_path)]
+                args += ["-filter_complex", f"{prefix}{graph}", "-map", "[v]"]
                 if audio_label:
                     args += ["-map", audio_label]
                 args += [*_ENCODE, str(out)]
@@ -1034,17 +1212,29 @@ def render_clip(
             path.unlink(missing_ok=True)
 
     # Single pass (also the fallback when silence removal found nothing).
+    prefix, vin = logo_prefix("0:v")
     graph = video_chain(
-        style, width, height, ass_path, window / rate, progress, vin="0:v",
+        style, width, height, ass_path, window / rate, progress, vin=vin,
         fmt=fmt, smart=smart_plan([(0.0, window)]), speed=rate,
     )
     args = [
         "-ss", f"{float(start):.3f}",
         "-t", f"{window:.3f}",
         "-i", str(src),
-        "-filter_complex", graph,
-        "-map", "[v]", "-map", "0:a?",
     ]
+    if track_ok:
+        args += ["-stream_loop", "-1", "-i", str(track_path)]
+        from . import audioswap
+
+        plan = audioswap.mix_plan(
+            audio_mix, window / rate, source_label="0:a" if audio_ok else None,
+            speed=rate, loud=loud,
+        )
+        graph = f"{prefix}{graph};{plan['graph']}"
+        args += ["-filter_complex", graph, "-map", "[v]", "-map", plan["label"]]
+    else:
+        graph = f"{prefix}{graph}" if prefix else graph
+        args += ["-filter_complex", graph, "-map", "[v]", "-map", "0:a?"]
     if afilter:
         args += ["-af", afilter]
     args += [*_ENCODE, str(out)]
@@ -1062,6 +1252,124 @@ def extract_thumbnail(clip: Path, out: Path) -> Path:
         timeout=120,
     )
     return out
+
+
+# --------------------------------------------------------------------------
+# Clip Inspector (T6) + Thumbnail Picker (T6)
+# --------------------------------------------------------------------------
+_PROBE_VIDEO = re.compile(r"Video:\s*([A-Za-z0-9_\-]+)")
+_PROBE_SIZE = re.compile(r"(\d{2,5})x(\d{2,5})")
+_PROBE_FPS = re.compile(r"([\d.]+)\s*fps")
+_PROBE_AUDIO = re.compile(r"Audio:\s*([A-Za-z0-9_\-]+)")
+_PROBE_RATE = re.compile(r"([\d.]+)\s*Hz")
+
+
+def probe_media(path: Path | str, timeout: int = 60) -> dict:
+    """Resolution / fps / codecs / duration / size of a media file.
+
+    Parsed from ``ffmpeg -i`` (a standalone ``ffprobe`` is *not* a dependency
+    of this project, so probing must survive without it). Every field is
+    ``None`` when it cannot be read — the endpoint still answers 200.
+    """
+    path = Path(path)
+    info: dict = {
+        "path": str(path),
+        "exists": path.is_file(),
+        "size_bytes": None,
+        "duration": None,
+        "width": None,
+        "height": None,
+        "fps": None,
+        "video_codec": None,
+        "audio_codec": None,
+        "sample_rate": None,
+        "aspect": None,
+        "orientation": None,
+    }
+    if not info["exists"]:
+        return info
+    try:
+        info["size_bytes"] = path.stat().st_size
+    except OSError:
+        pass
+    try:
+        proc = subprocess.run(
+            [config.FFMPEG_BIN, "-hide_banner", "-i", str(path)],
+            capture_output=True, text=True, timeout=timeout,
+        )
+        text = (proc.stderr or "") + (proc.stdout or "")
+    except Exception:
+        return info
+    info["duration"] = probe_duration(path)
+    for line in text.splitlines():
+        if "Video:" in line and info["video_codec"] is None:
+            codec = _PROBE_VIDEO.search(line)
+            size = _PROBE_SIZE.search(line)
+            fps = _PROBE_FPS.search(line)
+            if codec:
+                info["video_codec"] = codec.group(1)
+            if size:
+                info["width"], info["height"] = int(size.group(1)), int(size.group(2))
+            if fps:
+                try:
+                    info["fps"] = round(float(fps.group(1)), 3)
+                except ValueError:
+                    info["fps"] = None
+        elif "Audio:" in line and info["audio_codec"] is None:
+            codec = _PROBE_AUDIO.search(line)
+            rate = _PROBE_RATE.search(line)
+            if codec:
+                info["audio_codec"] = codec.group(1)
+            if rate:
+                try:
+                    info["sample_rate"] = int(float(rate.group(1)))
+                except ValueError:
+                    info["sample_rate"] = None
+    if info["width"] and info["height"]:
+        info["aspect"] = f"{info['width']}x{info['height']}"
+        if info["height"]:
+            info["orientation"] = (
+                "vertical" if info["width"] < info["height"]
+                else "square" if info["width"] == info["height"] else "wide"
+            )
+    return info
+
+
+def frame_candidates(clip: Path | str, count: int, out_dir: Path,
+                     stem: str, quality: int = 4) -> list[dict]:
+    """``count`` evenly spread JPEG candidates for the thumbnail picker.
+
+    Frames are grabbed at the centre of each slice (so no black fade-in frame,
+    no two frames from the same second). Failures yield fewer entries instead
+    of raising — the picker just shows what it could read.
+    """
+    clip = Path(clip)
+    count = max(1, min(int(count), config.THUMB_CANDIDATES[1]))
+    duration = probe_duration(clip) or 0.0
+    if duration <= 0:
+        return []
+    out_dir = Path(out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    found: list[dict] = []
+    for index in range(count):
+        stamp = round(min(max(duration * (index + 0.5) / count, 0.05),
+                          max(duration - 0.05, 0.05)), 3)
+        target = out_dir / f"{stem}-cand-{index}.jpg"
+        try:
+            _run(
+                [
+                    "-ss", f"{stamp:.3f}", "-i", str(clip),
+                    "-frames:v", "1", "-vf", "scale=720:-2",
+                    "-q:v", str(max(1, min(int(quality), 31))),
+                    str(target),
+                ],
+                timeout=90,
+            )
+        except Exception:
+            continue
+        if target.is_file() and target.stat().st_size > 0:
+            found.append({"index": index, "time": stamp, "file": target.name})
+    return found
 
 
 # --------------------------------------------------------------------------

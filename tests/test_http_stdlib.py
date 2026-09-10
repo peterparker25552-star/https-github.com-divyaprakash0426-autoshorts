@@ -90,8 +90,9 @@ class HealthTests(StdlibServerBase):
         status, body, headers = self.get("/api/health")
         self.assertEqual(status, 200)
         self.assertIn("application/json", headers["Content-Type"])
-        self.assertEqual(body["version"], "0.4.0")
-        self.assertEqual(body["app"], "autoshorts")
+        self.assertEqual(body["version"], "0.5.0")
+        self.assertEqual(body["app"], "Qyro")
+        self.assertEqual(body["brand"], "Qyro")
         self.assertIsInstance(body["youtube_reachable"], bool)
         self.assertTrue(body["demo_available"])
         self.assertIn("yt_dlp", body["versions"])
@@ -304,7 +305,7 @@ class ShortsFlowTests(StdlibServerBase):
         )
         self.assertEqual(status, 200)
         self.assertIn("text/csv", headers["Content-Type"])
-        self.assertIn("autoshorts-demo-chhetri-223-moments.csv",
+        self.assertIn("qyro-demo-chhetri-223-moments.csv",
                       headers["Content-Disposition"])
         lines = text.decode("utf-8").strip().splitlines()
         self.assertEqual(lines[0], "start,end,duration,title,score,reasons")

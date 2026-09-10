@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ============================================================
-#   AutoShorts - start the app (macOS / Linux)
+#   Qyro - start the app (macOS / Linux)
 # ============================================================
 cd "$(dirname "$0")"
 if [ ! -d .venv ]; then
@@ -8,7 +8,7 @@ if [ ! -d .venv ]; then
   exit 1
 fi
 echo
-echo "  AutoShorts is starting... keep this terminal OPEN."
+echo "  Qyro is starting... keep this terminal OPEN."
 echo "  Open http://localhost:8000 in your browser."
 echo "  To stop the app, press Ctrl+C."
 echo

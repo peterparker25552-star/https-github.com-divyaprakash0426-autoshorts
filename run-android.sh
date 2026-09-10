@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ============================================================
-#   AutoShorts - launcher for ANDROID (run inside Termux)
+#   Qyro - launcher for ANDROID (run inside Termux)
 # ============================================================
 cd "$(dirname "$0")"
 # System Python is used on Termux (it is already per-app private, and
@@ -17,7 +17,7 @@ fi
 
 IP=$(ip addr show wlan0 2>/dev/null | grep -o 'inet [0-9.]*' | awk '{print $2}' | head -1)
 echo
-echo "  AutoShorts is starting... keep Termux OPEN and the phone AWAKE."
+echo "  Qyro is starting... keep Termux OPEN and the phone AWAKE."
 echo
 echo "  On this phone : http://localhost:8000"
 [ -n "$IP" ] && echo "  On other devices on the same Wi-Fi: http://$IP:8000"

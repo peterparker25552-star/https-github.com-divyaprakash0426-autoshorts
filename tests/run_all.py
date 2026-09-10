@@ -1,5 +1,10 @@
 #!/usr/bin/env python3
-"""AutoShorts test runner: byte-compile, node --check, then every test module.
+"""Qyro test runner: byte-compile, node --check, then every test module.
+
+v0.5.0 added ``test_units_v050`` (logo remover maths, beat peak-picking, audio
+graphs, caption brands, the free engine's fallbacks, the media prober) and
+``test_http_v050`` (every new route on both servers, the PWA assets, the
+no-emoji rule and one real 1440p end-to-end render).
 
 Usage:  python -m tests.run_all   (or python tests/run_all.py from the repo)
 """
@@ -33,7 +38,7 @@ def main() -> int:
     step("node --check (web UI)")
     node = shutil.which("node")
     if node:
-        for script in ("app.js",):
+        for script in ("app.js", "sw.js"):
             proc = subprocess.run(
                 [node, "--check", str(REPO_ROOT / "web" / script)],
                 capture_output=True, text=True,
@@ -48,8 +53,10 @@ def main() -> int:
     suite = unittest.TestSuite()
     for module in (
         "tests.test_units",
+        "tests.test_units_v050",
         "tests.test_http_fastapi",
         "tests.test_http_stdlib",
+        "tests.test_http_v050",
     ):
         suite.addTests(loader.loadTestsFromName(module))
     runner = unittest.TextTestRunner(verbosity=1)

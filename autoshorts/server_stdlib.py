@@ -25,7 +25,8 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, unquote, urlparse
 
-from . import __version__, config, demo, highlights, llm, maintenance, youtube
+from . import (__version__, config, demo, engine, highlights, llm, maintenance,
+               youtube)
 from .maintenance import ServiceError
 from .pipeline import Pipeline
 from .store import Store
@@ -34,6 +35,9 @@ from .transcripts import to_sentences
 WEB_DIR = Path(__file__).resolve().parent.parent / "web"
 
 _MAX_BODY = 5_000_000  # 5 MB cap on JSON request bodies
+# POST /api/audio carries a whole track as base64, so it gets its own (much
+# larger) cap: config.MAX_AUDIO_BYTES inflated by base64, plus header slack.
+_MAX_AUDIO_BODY = int(config.MAX_AUDIO_BYTES * 1.42) + 100_000
 _JOB_LIMIT = (1, 200)   # GET /api/jobs?limit=
 
 mimetypes.add_type("application/manifest+json", ".webmanifest")
@@ -88,7 +92,8 @@ def _service(fn, *args, **kwargs):
 def api_health() -> dict:
     disk = maintenance.disk_usage()
     return {
-        "app": "autoshorts",
+        "app": config.APP_NAME,
+        "brand": config.APP_NAME,
         "version": __version__,
         "youtube_reachable": youtube_reachable(),
         "demo_available": True,
@@ -96,7 +101,8 @@ def api_health() -> dict:
         "versions": maintenance.versions_info(),
         "disk_free": disk["free"],
         "disk_total": disk["total"],
-        "llm_available": llm.available(),
+        "llm_available": bool(engine.available(store.settings()) or llm.available()),
+        "engine": engine.public_state(store.settings()),
     }
 
 
@@ -116,7 +122,7 @@ def api_state() -> dict:
         if clips else 0.0
     )
     return {
-        "settings": store.settings(),
+        "settings": maintenance.public_settings(store),
         "episodes": episodes,
         "clips": clips,
         "jobs": list(jobs.values()),
@@ -134,6 +140,8 @@ def api_state() -> dict:
             "profile": "viral",
             **maintenance.RENDER_DEFAULTS,
         },
+        "engine": maintenance.engine_settings(store),
+        "audio_tracks": maintenance.audio_tracks()["tracks"],
     }
 
 
@@ -344,6 +352,34 @@ def api_manual(ep_id: str, body: dict) -> dict:
     return {"job_id": job["id"]}
 
 
+def api_audio_upload(body: dict) -> dict:
+    """POST /api/audio — {name, data_b64} -> {track_id}."""
+    return _service(maintenance.audio_upload, store, body)
+
+
+def api_beats(ep_id: str, query: dict) -> dict:
+    force = (query.get("refresh") or ["0"])[0] in ("1", "true", "yes")
+    return _service(maintenance.episode_beats, store, ep_id, force)
+
+
+def api_probe(clip_id: str) -> dict:
+    return _service(maintenance.clip_probe, store, clip_id)
+
+
+def api_titles(body: dict) -> dict:
+    """POST /api/titles — Title Lab (offline templates, AI when configured)."""
+    return _service(maintenance.title_lab, store, body)
+
+
+def api_thumb_candidates(clip_id: str, query: dict) -> dict:
+    n = (query.get("n") or [str(config.DEFAULT_THUMB_CANDIDATES)])[0]
+    return _service(maintenance.thumb_candidates, store, clip_id, n)
+
+
+def api_thumb_pick(clip_id: str, body: dict) -> dict:
+    return _service(maintenance.thumb_pick, store, clip_id, body)
+
+
 def api_transcript(ep_id: str) -> dict:
     episode = _get_episode_or_404(ep_id)
     try:
@@ -357,7 +393,7 @@ def api_transcript(ep_id: str) -> dict:
 # HTTP layer
 # ---------------------------------------------------------------------------
 class Handler(BaseHTTPRequestHandler):
-    server_version = "AutoShorts/" + __version__
+    server_version = f"{config.APP_NAME}/{__version__}"
 
     def log_message(self, fmt: str, *args) -> None:  # quieter than the default
         print(f"{self.address_string()} {self.command} {self.path} -> {fmt % args}")
@@ -376,7 +412,7 @@ class Handler(BaseHTTPRequestHandler):
         if self._want_body:
             self.wfile.write(data)
 
-    def _read_json(self) -> dict:
+    def _read_json(self, max_body: int = _MAX_BODY) -> dict:
         length = self.headers.get("Content-Length")
         if not length:
             return {}
@@ -384,7 +420,7 @@ class Handler(BaseHTTPRequestHandler):
             count = int(length)
         except ValueError:
             raise ApiError(400, "Bad Content-Length")
-        if count > _MAX_BODY:
+        if count > max_body:
             raise ApiError(413, "Request body too large")
         raw = self.rfile.read(count) if count > 0 else b""
         if not raw.strip():
@@ -474,7 +510,7 @@ class Handler(BaseHTTPRequestHandler):
             raise ApiError(404, "No clips available to download")
         stamp = int(time.time())
         suffix = f"-{episode_id}" if episode_id else ""
-        download_name = f"autoshorts{suffix}-{stamp}.zip"
+        download_name = f"qyro{suffix}-{stamp}.zip"
         with tempfile.NamedTemporaryFile(
             prefix="autoshorts-", suffix=".zip", dir=config.DATA_DIR, delete=False
         ) as temporary:
@@ -482,7 +518,7 @@ class Handler(BaseHTTPRequestHandler):
         try:
             with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_STORED) as archive:
                 for clip, path in files:
-                    archive.write(path, arcname=f"autoshort-{clip['id']}.mp4")
+                    archive.write(path, arcname=f"qyro-{clip['id']}.mp4")
             self._serve_file(zip_path, "application/zip", download_name, attachment=True)
         finally:
             zip_path.unlink(missing_ok=True)
@@ -499,7 +535,7 @@ class Handler(BaseHTTPRequestHandler):
             self._serve_file(
                 backup_path,
                 "application/json",
-                f"autoshorts-state-{int(time.time())}.json",
+                f"qyro-state-{int(time.time())}.json",
                 attachment=True,
             )
         finally:
@@ -551,6 +587,13 @@ class Handler(BaseHTTPRequestHandler):
                 self._serve_file(WEB_DIR / "index.html", "text/html; charset=utf-8")
                 return
 
+            if path == "/sw.js":
+                # A service worker must come from the origin root to control "/"
+                if method not in ("GET", "HEAD"):
+                    raise ApiError(405, "Method not allowed")
+                self._serve_file(WEB_DIR / "sw.js", "text/javascript; charset=utf-8")
+                return
+
             if path == "/static" or path.startswith("/static/"):
                 if method not in ("GET", "HEAD"):
                     raise ApiError(405, "Method not allowed")
@@ -578,7 +621,11 @@ class Handler(BaseHTTPRequestHandler):
                 pass
 
     def _dispatch_api(self, parts: list[str], query: dict, method: str) -> None:
-        body = self._read_json() if method in ("POST", "PUT", "PATCH") else {}
+        big = parts == ["audio"] and method == "POST"
+        body = (
+            self._read_json(_MAX_AUDIO_BODY) if big
+            else (self._read_json() if method in ("POST", "PUT", "PATCH") else {})
+        )
 
         # GET /api/health
         if parts == ["health"]:
@@ -620,6 +667,34 @@ class Handler(BaseHTTPRequestHandler):
             if method != "POST":
                 raise ApiError(405, "Method not allowed")
             self._send_json(api_batch(body))
+            return
+
+        # POST /api/audio · GET /api/audio — user music beds (T3).
+        # GET /api/audio/{id}/file streams one back for the UI player and
+        # DELETE /api/audio/{id} forgets it; both are v0.5.0 additions.
+        if parts and parts[0] == "audio":
+            if len(parts) == 1:
+                if method == "POST":
+                    self._send_json(api_audio_upload(body))
+                    return
+                if method in ("GET", "HEAD"):
+                    self._send_json(maintenance.audio_tracks())
+                    return
+                raise ApiError(405, "Method not allowed")
+            if len(parts) == 3 and parts[2] == "file" and method in ("GET", "HEAD"):
+                path = _service(maintenance.audio_track_file, parts[1])
+                self._serve_file(path, "audio/mpeg", f"qyro-track-{parts[1]}.audio")
+                return
+            if len(parts) == 2 and method == "DELETE":
+                self._send_json(_service(maintenance.audio_delete, parts[1]))
+                return
+            raise ApiError(404, "Not found")
+
+        # POST /api/titles — Title Lab (T6)
+        if parts == ["titles"]:
+            if method != "POST":
+                raise ApiError(405, "Method not allowed")
+            self._send_json(api_titles(body))
             return
 
         # GET /api/search?q=
@@ -673,13 +748,21 @@ class Handler(BaseHTTPRequestHandler):
         # /api/episodes/{id}[/{action}]
         if len(parts) >= 2 and parts[0] == "episodes":
             ep_id, action = parts[1], (parts[2] if len(parts) == 3 else None)
-            if action in ("transcript", "chapters") and len(parts) == 3:
+            if action in ("transcript", "chapters", "beats") and len(parts) == 3:
                 if method not in ("GET", "HEAD"):
                     raise ApiError(405, "Method not allowed")
                 if action == "transcript":
                     self._send_json(api_transcript(ep_id))
-                else:
+                elif action == "chapters":
                     self._send_json(api_chapters(ep_id))
+                else:
+                    self._send_json(api_beats(ep_id, query))
+                return
+            if action == "audio.mp3" and len(parts) == 3:
+                if method not in ("GET", "HEAD"):
+                    raise ApiError(405, "Method not allowed")
+                path, name = _service(maintenance.extract_mp3, store, ep_id)
+                self._serve_file(path, "audio/mpeg", name, attachment=True)
                 return
             if action == "export" and len(parts) == 3:
                 if method not in ("GET", "HEAD"):
@@ -752,6 +835,27 @@ class Handler(BaseHTTPRequestHandler):
                         raise ApiError(405, "Method not allowed")
                     self._send_json(api_rename(clip_id, body))
                     return
+                if action == "probe":
+                    if method not in ("GET", "HEAD"):
+                        raise ApiError(405, "Method not allowed")
+                    self._send_json(api_probe(clip_id))
+                    return
+                if action == "audio.mp3":
+                    if method not in ("GET", "HEAD"):
+                        raise ApiError(405, "Method not allowed")
+                    path, name = _service(maintenance.extract_mp3, store, clip_id)
+                    self._serve_file(path, "audio/mpeg", name, attachment=True)
+                    return
+                if action == "thumb-candidates":
+                    if method not in ("GET", "HEAD"):
+                        raise ApiError(405, "Method not allowed")
+                    self._send_json(api_thumb_candidates(clip_id, query))
+                    return
+                if action == "thumb-pick":
+                    if method != "POST":
+                        raise ApiError(405, "Method not allowed")
+                    self._send_json(api_thumb_pick(clip_id, body))
+                    return
                 if action in ("file", "thumb"):
                     if method not in ("GET", "HEAD"):
                         raise ApiError(405, "Method not allowed")
@@ -763,8 +867,21 @@ class Handler(BaseHTTPRequestHandler):
                         if not path.exists():
                             raise ApiError(410, "Clip file missing on disk")
                         self._serve_file(
-                            path, "video/mp4", f"autoshort-{clip_id}.mp4"
+                            path, "video/mp4", f"qyro-{clip_id}.mp4"
                         )
+                        return
+                    candidate = (query.get("index") or [None])[0]
+                    if candidate is not None:
+                        # v0.5.0 thumb picker: ?index=N serves a candidate frame
+                        try:
+                            number = int(candidate)
+                        except (TypeError, ValueError):
+                            raise ApiError(422, "index must be an integer")
+                        path = (config.THUMBS_DIR
+                                / f"{clip_id}-cand-{number}.jpg")
+                        if not path.is_file():
+                            raise ApiError(404, "No candidate at that index")
+                        self._serve_file(path, "image/jpeg")
                         return
                     if not clip.get("thumb"):
                         raise ApiError(404, "No thumbnail")
@@ -785,7 +902,7 @@ class Server(ThreadingHTTPServer):
 
 def serve(host: str = "0.0.0.0", port: int = 8000) -> None:
     httpd = Server((host, port), Handler)
-    print(f"AutoShorts UI → http://{host}:{port}")
+    print(f"{config.APP_NAME} v{__version__} UI → http://{host}:{port}")
     try:
         httpd.serve_forever()
     except KeyboardInterrupt:
@@ -797,7 +914,9 @@ def serve(host: str = "0.0.0.0", port: int = 8000) -> None:
 if __name__ == "__main__":
     import argparse
 
-    parser = argparse.ArgumentParser(description="AutoShorts stdlib server")
+    parser = argparse.ArgumentParser(
+        description=f"{config.APP_NAME} stdlib server (zero dependencies)"
+    )
     parser.add_argument("--host", default="0.0.0.0")
     parser.add_argument("--port", type=int, default=8000)
     args = parser.parse_args()

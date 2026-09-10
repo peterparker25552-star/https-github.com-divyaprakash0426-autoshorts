@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import re
 
+from . import config
+
 # --------------------------------------------------------------------------
 # Lexicons
 # --------------------------------------------------------------------------
@@ -63,6 +65,19 @@ _ENGLISH_STOPWORDS = (
 
 STOPWORDS = frozenset(_HINGLISH + _JUNK_VERBS + _ENGLISH_STOPWORDS)
 JUNK_VERBS = frozenset(_JUNK_VERBS)
+
+# Words that score high on frequency but make a title look silly when used as
+# the "topic" ("the truth about truth"), so Title Lab skips them if it can.
+_META_WORDS = frozenset({
+    "truth", "thing", "things", "time", "life", "year", "years", "day", "people",
+    "really", "know", "think", "want", "going", "said", "told", "question",
+    "story", "part", "lot", "way", "thing", "best", "great", "much", "still",
+})
+_HOOK_HINTS = (
+    "the truth is", "nobody", "no one", "i remember", "one day", "the day",
+    "biggest", "never", "secret", "mistake", "here's the thing", "shocking",
+    "sach", "log", "people think",
+)
 
 _WORD_RE = re.compile(r"[a-z0-9']+")
 _WS_RE = re.compile(r"\s+")
@@ -169,6 +184,45 @@ def keywords(text: str, limit: int = 8, exclude: tuple[str, ...] | set[str] | li
     return ranked[: max(1, limit)]
 
 
+def topic_phrases(text: str, kws: list[str], limit: int = 3) -> list[str]:
+    """Topic strings for a title: a strong bigram beats a bare adjective.
+
+    ``"indian"`` alone reads badly ("Stop worrying about indian"); if the two
+    most frequent words sit next to each other in the text we use the phrase
+    instead. Falls back to single keywords.
+    """
+    tokens = [t for t in _WORD_RE.findall(str(text or "").lower()) if t]
+    counts: dict[str, int] = {}
+    for first, second in zip(tokens, tokens[1:]):
+        if first in STOPWORDS or second in STOPWORDS:
+            continue
+        if len(first) < 4 or len(second) < 4:
+            continue
+        phrase = f"{first} {second}"
+        counts[phrase] = counts.get(phrase, 0) + 1
+    ranked = sorted(counts.items(), key=lambda kv: (-kv[1], kv[0]))
+    out: list[str] = []
+    pool = list(kws or [])
+    for phrase, count in ranked:
+        if count < 2:
+            break
+        first, second = phrase.split(" ")
+        if first in pool or second in pool:
+            value = " ".join(word.capitalize() for word in phrase.split())
+            if value.lower() not in [item.lower() for item in out]:
+                out.append(value)
+                pool = [word for word in pool if word not in (first, second)]
+                if len(out) >= limit:
+                    return out
+    for word in pool:
+        value = word.capitalize()
+        if value.lower() not in [item.lower() for item in out]:
+            out.append(value)
+        if len(out) >= limit:
+            break
+    return out
+
+
 # --------------------------------------------------------------------------
 # Pack generation
 # --------------------------------------------------------------------------
@@ -256,7 +310,7 @@ def _description(
     lines.append(f"Clip length: {secs}s")
     lines.append("")
     lines.append(" ".join(hashtags[:8]))
-    lines.append("Cut locally with AutoShorts ✂️")
+    lines.append(f"Made with {config.APP_NAME}")
     return "\n".join(lines).strip()
 
 
@@ -295,3 +349,89 @@ def generate_pack(
         "keywords": kws,
         "seconds": secs,
     }
+
+
+# --------------------------------------------------------------------------
+# Title Lab — offline variations (the engine may rewrite these with AI)
+# --------------------------------------------------------------------------
+# Each template is a different *hook shape* that works on Shorts. They only use
+# words already present in the clip, so nothing is invented when no key is set.
+def variations(
+    text: str,
+    profile: str = "viral",
+    count: int = config.TITLE_VARIATIONS,
+    episode_title: str = "",
+) -> dict:
+    """Ten offline title variations + hashtags for one transcript snippet.
+
+    Pure stdlib, no key, no network. The templates deliberately use different
+    shapes (question, number, confession, contrast, list, direct address …) so
+    the picker in the UI offers real choices rather than one line ten times.
+    """
+    clean = _clean_text(text)
+    pack = generate_pack(clean, clean, episode_title, profile, 0.0)
+    guest = pack["guest"]
+    kws = [word for word in (pack["keywords"] or []) if word not in _META_WORDS]
+    if not kws:
+        kws = pack["keywords"] or ["this story"]
+    phrases = topic_phrases(clean, kws)
+    topic = phrases[0] if phrases else kws[0].title()
+    second = phrases[1] if len(phrases) > 1 else (
+        kws[1].title() if len(kws) > 1 else "")
+    # Lead on the punchiest *sentence*, not the whole snippet — a 160-char
+    # quote is unreadable in a Shorts title.
+    sentences = [part.strip() for part in _QUESTION_SPLIT.split(clean) if part.strip()]
+    hooky = [part for part in sentences if any(h in part.lower() for h in _HOOK_HINTS)]
+    lead_source = (hooky or sentences or [clean])[0]
+    lead = _punchy(lead_source[:110])
+    who = guest or "He"
+    numbers = re.findall(r"\b\d[\d,.]*\s?(?:%|percent|crore|lakh|million|billion)?",
+                         clean, flags=re.I)
+    number = numbers[0].strip() if numbers else ""
+
+    ideas = [
+        lead,
+        f"{topic}: what nobody tells you",
+        f"Why {topic.lower()} changed everything for {who}",
+        f"{who} on {topic.lower()}" + (f", {second.lower()} and what it cost" if second else ""),
+        f"The {topic.lower()} moment that shocked {who}",
+        (f"{number} — and everything changed" if number else
+         f"The {topic.lower()} part most people miss"),
+        f"{topic}" + (f" vs {second}" if second else "") + " — the honest answer",
+        f"Stop getting {topic.lower()} wrong",
+        f"{who}'s biggest lesson about {topic.lower()}",
+        f"Watch this before you judge {topic.lower()}",
+    ]
+
+    seen: set[str] = set()
+    titles: list[str] = []
+    for idea in ideas:
+        value = _clip(str(idea).strip(), 90).rstrip(" .,;:")
+        key = value.lower()
+        if len(value) < 6 or key in seen:
+            continue
+        seen.add(key)
+        titles.append(value)
+    extra = (
+        "the untold part", "what it really costs", "the turning point",
+        "why it matters", "the first ten years", "what the data says",
+    )
+    while len(titles) < max(1, int(count)) and len(titles) < len(ideas) + len(extra):
+        filler = _clip(f"{topic} — {extra[len(titles) % len(extra)]}", 90).rstrip(" .,;:")
+        if filler.lower() in seen:
+            filler = _clip(f"{who} on {topic.lower()} — {extra[len(titles) % len(extra)]}", 90)
+            if filler.lower() in seen:
+                break
+        seen.add(filler.lower())
+        titles.append(filler)
+    titles = titles[: max(1, int(count))]
+
+    hashtags = _hashtags(guest, kws, profile, limit=12)
+    return {
+        "titles": titles,
+        "hashtags": hashtags,
+        "keywords": kws,
+        "guest": guest,
+        "profile": profile if profile in config.PROFILES else "viral",
+    }
+
