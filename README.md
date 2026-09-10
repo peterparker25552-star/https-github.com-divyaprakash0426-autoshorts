@@ -67,12 +67,22 @@ cp data/clips/*.mp4 ~/storage/downloads/
 AutoShorts automatically uses Termux's native (ARM) ffmpeg and binds to
 `0.0.0.0`, so any device on the same Wi-Fi can open the app too.
 
+> **Android uses a built-in pure-Python server** — no FastAPI / pydantic, so
+> the install works on every Termux Python (including 3.14+, where pip cannot
+> resolve FastAPI at all). If you previously hit
+> `ERROR: Cannot install fastapi==...`, just re-run the one-liner above; it
+> replaces the old install completely.
+
 **Manual (any OS):**
 
 ```bash
 pip install -r requirements.txt   # ffmpeg ships via imageio-ffmpeg
 python run.py                     # open http://localhost:8000
 ```
+
+No FastAPI? No problem — `run.py` automatically falls back to the built-in
+pure-Python server (same UI, same API). Strictly speaking only `yt-dlp` is
+required for YouTube downloads, and demo mode needs nothing at all.
 
 Then either:
 
