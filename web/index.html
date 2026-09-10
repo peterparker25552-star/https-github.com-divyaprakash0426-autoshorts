@@ -25,12 +25,26 @@
            spellcheck="false">
     <button id="loadPlaylist" class="btn primary">Load playlist</button>
     <button id="loadDemo" class="btn ghost">⚡ Try demo</button>
+    <button id="dashBtn" class="btn ghost" title="Storage, jobs, backup">🛠 Dashboard</button>
   </div>
 
   <div class="health" id="health"></div>
 </header>
 
 <div id="statstrip" class="statstrip" aria-label="AutoShorts statistics"></div>
+
+<div class="batchbar" aria-label="Batch controls">
+  <span class="blabel">Batch options</span>
+  <select id="presetSel" class="sortsel" aria-label="Option presets">
+    <option value="">— presets —</option>
+  </select>
+  <button id="presetSave" class="btn small" title="Save the current options as a preset">💾 Save</button>
+  <button id="presetDelete" class="btn small iconbtn" title="Delete the selected preset">🗑</button>
+  <button id="processAll" class="btn primary small" title="Generate shorts for every new/errored episode">⚡ All</button>
+  <label class="toggle" title="Auto-queue episodes as soon as a playlist loads">
+    <input id="autopilot" type="checkbox"> auto-pilot
+  </label>
+</div>
 
 <main class="layout">
   <section class="episodes">
@@ -70,6 +84,8 @@
   built-in highlight engine, ffmpeg for rendering. Clip responsibly: respect
   creators' rights and platform terms.
 </footer>
+
+<div id="modalRoot" class="modal-root" hidden></div>
 
 <script src="/static/app.js"></script>
 </body>

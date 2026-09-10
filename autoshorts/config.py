@@ -60,6 +60,22 @@ RENDER_HEIGHTS = {              # quality presets -> output height (9:16)
 DEFAULT_QUALITY = "fast"
 DEFAULT_STYLE = "blur"          # "blur" (safe) or "crop" (center-crop)
 
+# --- v0.3.0 render options --------------------------------------------------
+# Framing formats, caption styles and delivery speeds the API accepts. Every
+# one of them is validated by both servers before a job is queued.
+FORMATS = ("vertical", "square", "wide")
+CAPTION_STYLES = ("classic", "pop", "minimal")
+SPEEDS = (1.0, 1.1, 1.25)
+
+OUTPUT_SIZES = {                # format -> quality -> (width, height)
+    "vertical": {"fast": (720, 1280), "full": (1080, 1920)},
+    "square": {"fast": (720, 720), "full": (1080, 1080)},
+    "wide": {"fast": (1280, 720), "full": (1920, 1080)},
+}
+DEFAULT_FORMAT = "vertical"
+DEFAULT_CAPTIONS = "classic"
+DEFAULT_SPEED = 1.0
+
 CAPTION_FONT = os.environ.get("AUTOSHORTS_FONT", "DejaVu Sans")
 CAPTION_WORDS_PER_LINE = 4      # words shown on screen at once
 

@@ -198,3 +198,38 @@ def segments_for_window(
             Segment(max(s.start, start), min(s.end, end), s.text)
         )
     return out
+
+
+# --------------------------------------------------------------------------
+# SubRip export
+# --------------------------------------------------------------------------
+def _srt_time(seconds: float) -> str:
+    total_ms = int(round(max(0.0, float(seconds)) * 1000))
+    hours, rem = divmod(total_ms, 3_600_000)
+    minutes, rem = divmod(rem, 60_000)
+    secs, millis = divmod(rem, 1000)
+    return f"{hours:02d}:{minutes:02d}:{secs:02d},{millis:03d}"
+
+
+def to_srt(segments: Iterable[Segment], offset: float = 0.0) -> str:
+    """Render ``segments`` as valid SubRip (``.srt``) text.
+
+    ``offset`` is *added* to every timestamp, so passing ``-clip_start`` makes
+    a windowed transcript start at ``00:00:00,000`` — exactly what a clip's
+    sidecar subtitle file needs.
+    """
+    blocks: list[str] = []
+    index = 0
+    for segment in sorted(segments, key=lambda s: (s.start, s.end)):
+        text = _clean(segment.text)
+        if not text:
+            continue
+        start = max(0.0, segment.start + offset)
+        end = max(start + 0.05, segment.end + offset)
+        index += 1
+        blocks.append(
+            f"{index}\n{_srt_time(start)} --> {_srt_time(end)}\n{text}\n"
+        )
+    if not blocks:
+        return ""
+    return "\n".join(blocks) + "\n"

@@ -11,7 +11,7 @@ import traceback
 import uuid
 from pathlib import Path
 
-from . import config, demo, highlights, youtube
+from . import config, demo, highlights, titles, youtube
 from .ffmpeg import extract_thumbnail, make_ass, render_clip
 from .store import Store
 from .transcripts import Segment, segments_for_window, to_sentences
@@ -85,12 +85,43 @@ class Pipeline:
         )
 
     @staticmethod
-    def _render_settings(params: dict) -> tuple[str, int]:
-        style = params.get("style", config.DEFAULT_STYLE)
-        height = config.RENDER_HEIGHTS.get(
-            params.get("quality", config.DEFAULT_QUALITY), 1280
-        )
-        return style, height
+    def _render_settings(params: dict) -> dict:
+        """Resolve the eight render options a job asked for.
+
+        Unknown values fall back to the project defaults instead of failing a
+        long render; the API layers validate first and return 422 anyway.
+        """
+        style = str(params.get("style") or config.DEFAULT_STYLE)
+        if style not in ("crop", "blur"):
+            style = config.DEFAULT_STYLE
+        quality = str(params.get("quality") or config.DEFAULT_QUALITY)
+        if quality not in config.RENDER_HEIGHTS:
+            quality = config.DEFAULT_QUALITY
+        fmt = str(params.get("format") or config.DEFAULT_FORMAT)
+        if fmt not in config.OUTPUT_SIZES:
+            fmt = config.DEFAULT_FORMAT
+        captions = str(params.get("captions") or config.DEFAULT_CAPTIONS)
+        if captions not in config.CAPTION_STYLES:
+            captions = config.DEFAULT_CAPTIONS
+        try:
+            speed = float(params.get("speed", config.DEFAULT_SPEED))
+        except (TypeError, ValueError):
+            speed = config.DEFAULT_SPEED
+        if speed not in config.SPEEDS:
+            speed = config.DEFAULT_SPEED
+        width, height = config.OUTPUT_SIZES[fmt][quality]
+        return {
+            "style": style,
+            "quality": quality,
+            "format": fmt,
+            "width": width,
+            "height": height,
+            "captions": captions,
+            "speed": speed,
+            "progress": bool(params.get("progress", False)),
+            "silence": bool(params.get("silence", False)),
+            "loud": bool(params.get("loud", False)),
+        }
 
     @staticmethod
     def _prepare_media(ep: dict) -> Path:
@@ -104,7 +135,7 @@ class Pipeline:
         min_dur = float(params.get("min_dur", config.MIN_CLIP_SECONDS))
         max_dur = float(params.get("max_dur", config.MAX_CLIP_SECONDS))
         profile = params.get("profile", "viral")
-        style, height = self._render_settings(params)
+        settings = self._render_settings(params)
 
         # 1) transcript ---------------------------------------------------
         self._progress(self.store, job_id, "transcript", 0.05, "Fetching transcript…")
@@ -155,14 +186,17 @@ class Pipeline:
                 0.45 + 0.5 * (index / max(total, 1)),
                 f"Rendering short {index + 1} of {total}…",
             )
-            self._render_one(ep, media, segments, moment, style, height)
+            self._render_one(
+                ep, media, segments, moment, settings, profile=profile
+            )
         self._progress(
             self.store, job_id, "done", 1.0, f"Generated {total} shorts"
         )
 
     # ------------------------------------------------------------------
     def _generate_manual(self, ep: dict, params: dict, job_id: str) -> None:
-        style, height = self._render_settings(params)
+        settings = self._render_settings(params)
+        profile = params.get("profile", "viral")
 
         # 1) transcript: manual clips use only an existing cache. Captions
         # are optional and a network transcript request must not block a cut.
@@ -188,6 +222,9 @@ class Pipeline:
             score=0,
             title=(params.get("title") or "Manual clip").strip() or "Manual clip",
             reasons=["manual pick"],
+            signals=highlights.signals_for_window(
+                to_sentences(segments), start, end, profile
+            ),
         )
 
         # 3) source media -------------------------------------------------
@@ -196,7 +233,7 @@ class Pipeline:
 
         # 4) render -------------------------------------------------------
         self._progress(self.store, job_id, "render", 0.45, "Rendering manual clip…")
-        self._render_one(ep, media, segments, moment, style, height)
+        self._render_one(ep, media, segments, moment, settings, profile=profile)
         self._progress(self.store, job_id, "done", 1.0, "Generated manual clip")
 
     @staticmethod
@@ -221,18 +258,21 @@ class Pipeline:
         media: Path,
         segments: list[Segment],
         moment: highlights.Highlight,
-        style: str,
-        height: int,
+        settings: dict,
+        profile: str = "viral",
     ) -> dict:
         """Render and persist one automatic or manual highlight."""
         clip_id = f"{ep['id'][:24]}-{uuid.uuid4().hex[:6]}"
+        window_segments = segments_for_window(segments, moment.start, moment.end)
         ass_path = make_ass(
-            segments_for_window(segments, moment.start, moment.end),
+            window_segments,
             moment.start,
             moment.end,
             config.SUBS_DIR / f"{clip_id}.ass",
-            play_w=round(height * 9 / 16 / 2) * 2,
-            play_h=height,
+            play_w=settings["width"],
+            play_h=settings["height"],
+            caption_style=settings["captions"],
+            speed=settings["speed"],
         )
         clip_path = config.CLIPS_DIR / f"{clip_id}.mp4"
         render_clip(
@@ -241,14 +281,31 @@ class Pipeline:
             moment.end,
             clip_path,
             ass_path,
-            style=style,
-            height=height,
+            style=settings["style"],
+            width=settings["width"],
+            height=settings["height"],
+            speed=settings["speed"],
+            progress=settings["progress"],
+            silence=settings["silence"],
+            loud=settings["loud"],
         )
         thumb_path = config.THUMBS_DIR / f"{clip_id}.jpg"
         try:
             extract_thumbnail(clip_path, thumb_path)
         except Exception:
             thumb_path = None  # non-fatal
+
+        duration = round(moment.end - moment.start, 2)
+        window_text = " ".join(
+            sentence.text for sentence in (moment.sentences or [])
+        ) or " ".join(segment.text for segment in window_segments)
+        pack = titles.generate_pack(
+            moment.title,
+            window_text,
+            str(ep.get("title") or ""),
+            profile,
+            duration,
+        )
 
         return self.store.add_clip(
             {
@@ -258,11 +315,31 @@ class Pipeline:
                 "title": moment.title,
                 "start": round(moment.start, 2),
                 "end": round(moment.end, 2),
-                "duration": round(moment.end - moment.start, 2),
+                "duration": duration,
                 "score": moment.score,
                 "reasons": moment.reasons,
-                "style": style,
-                "height": height,
+                "breakdown": dict(moment.signals or {}),
+                "pack": pack,
+                "style": settings["style"],
+                "format": settings["format"],
+                "captions": settings["captions"],
+                "quality": settings["quality"],
+                "speed": settings["speed"],
+                "progress": settings["progress"],
+                "silence": settings["silence"],
+                "loud": settings["loud"],
+                "width": settings["width"],
+                "height": settings["height"],
+                "render": {
+                    "style": settings["style"],
+                    "quality": settings["quality"],
+                    "format": settings["format"],
+                    "captions": settings["captions"],
+                    "speed": settings["speed"],
+                    "progress": settings["progress"],
+                    "silence": settings["silence"],
+                    "loud": settings["loud"],
+                },
                 "file": clip_path.name,
                 "thumb": thumb_path.name if thumb_path else None,
             }
