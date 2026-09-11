@@ -1108,120 +1108,299 @@ code { font: 12px/1.4 var(--mono); color: var(--cyan); }
   margin-left: auto;
 }
 
-/* ===== v6.2 Netflix-style intro ===== */
+/* ===== v6.2 cinematic studio intro =====
+   Netflix-like pacing and scale, but an original Qyro mark, ribbon system and
+   sound design. Only opacity, transforms and stroke offsets are animated; no
+   per-frame blur/backdrop filters, which keeps the reveal smooth on phones. */
 .intro-overlay {
   position: fixed;
   inset: 0;
   z-index: 100;
   display: grid;
   place-items: center;
-  background: #07070c;
-  background: radial-gradient(120% 120% at 50% 20%, rgba(124,58,237,0.18), transparent 60%),
-              radial-gradient(80% 80% at 80% 10%, rgba(34,211,238,0.12), transparent 55%),
-              #07070c;
-  transition: opacity 0.6s ease, visibility 0.6s ease;
+  overflow: hidden;
+  isolation: isolate;
+  contain: strict;
+  background: #010106;
+  color: #fff;
+  opacity: 1;
+  visibility: visible;
+  transition: opacity 0.9s cubic-bezier(0.22, 0.61, 0.36, 1),
+              visibility 0s linear 0.9s;
+}
+.intro-overlay::before,
+.intro-overlay::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+.intro-overlay::before {
+  z-index: 0;
+  background:
+    radial-gradient(ellipse 52% 42% at 50% 48%, rgba(124,58,237,0.12), transparent 70%),
+    radial-gradient(ellipse 38% 35% at 72% 32%, rgba(34,211,238,0.07), transparent 72%);
+  animation: introAmbient 5.8s ease both;
+}
+.intro-overlay::after {
+  z-index: 4;
+  background: radial-gradient(ellipse at center, transparent 35%, rgba(0,0,5,0.68) 100%);
 }
 .intro-overlay.dismissed {
   opacity: 0;
   visibility: hidden;
   pointer-events: none;
 }
+.intro-ambient {
+  position: absolute;
+  z-index: 1;
+  width: 52vmin;
+  height: 52vmin;
+  border-radius: 50%;
+  background: radial-gradient(circle, rgba(192,132,252,0.11), rgba(34,211,238,0.025) 42%, transparent 70%);
+  opacity: 0;
+  transform: scale(0.72);
+  animation: introHalo 4.8s cubic-bezier(0.22, 0.61, 0.36, 1) 0.3s both;
+  will-change: transform, opacity;
+}
+.intro-ribbons {
+  position: absolute;
+  z-index: 2;
+  inset: -12%;
+  width: 124%;
+  height: 124%;
+  overflow: visible;
+  pointer-events: none;
+  opacity: 1;
+  transform: translateZ(0);
+  will-change: opacity;
+}
+.intro-ribbon {
+  fill: none;
+  stroke: url(#introRibbonGradient);
+  stroke-linecap: round;
+  stroke-width: 0.34;
+  stroke-dasharray: 1;
+  stroke-dashoffset: 1;
+  opacity: 0;
+  animation: introRibbon 2.75s cubic-bezier(0.22, 0.61, 0.36, 1) both;
+  will-change: stroke-dashoffset, opacity;
+}
+.intro-ribbon.ribbon-a { animation-delay: 0.08s; }
+.intro-ribbon.ribbon-b { animation-delay: 0.22s; stroke-width: 0.25; opacity: 0.7; }
+.intro-ribbon.ribbon-c { animation-delay: 0.38s; stroke-width: 0.18; opacity: 0.55; }
+.intro-ribbon.ribbon-d { animation-delay: 0.5s; stroke-width: 0.13; opacity: 0.42; }
 .intro-inner {
+  position: relative;
+  z-index: 3;
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 14px;
+  gap: 0;
+  margin-top: -4vh;
   text-align: center;
+  transform: translateZ(0);
+  will-change: opacity, transform;
+}
+.intro-overlay.dismissed .intro-inner {
+  opacity: 0;
+  transform: translate3d(0, -8px, 0) scale(1.018);
+  transition: opacity 0.62s cubic-bezier(0.22, 0.61, 0.36, 1),
+              transform 0.78s cubic-bezier(0.22, 0.61, 0.36, 1);
+}
+.intro-overlay.dismissed .intro-ribbons,
+.intro-overlay.dismissed .intro-ambient {
+  opacity: 0;
+  transition: opacity 0.72s ease;
 }
 .intro-logo-wrap {
   position: relative;
-  width: 96px;
-  height: 96px;
-  border-radius: 22px;
-  overflow: hidden;
-  background: #0A0A0F;
-  box-shadow: 0 0 0 1px rgba(255,255,255,0.08), 0 22px 50px -18px rgba(124,58,237,0.7), 0 0 40px rgba(34,211,238,0.15);
-  animation: introPop 0.7s cubic-bezier(0.2,0.9,0.2,1) both;
+  width: clamp(132px, 27vw, 184px);
+  aspect-ratio: 1;
+  display: grid;
+  place-items: center;
+  transform: translateZ(0);
+  will-change: transform, opacity;
 }
-.intro-logo { width: 100%; height: 100%; display: block; }
-.intro-star {
-  transform-origin: 28px 27px;
-  animation: introStar 1.1s cubic-bezier(0.2,0.9,0.2,1) 0.15s both;
+.intro-logo {
+  position: relative;
+  z-index: 2;
+  display: block;
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+  transform: translateZ(0);
 }
-.intro-tail {
-  transform-origin: 35px 51px;
-  animation: introTail 0.6s cubic-bezier(0.2,0.9,0.2,1) 0.65s both;
+.intro-halo {
+  position: absolute;
+  z-index: 0;
+  inset: 15%;
+  border-radius: 50%;
+  background: radial-gradient(circle, rgba(192,132,252,0.19), rgba(34,211,238,0.05) 48%, transparent 72%);
+  opacity: 0;
+  transform: scale(0.6);
+  animation: introHalo 4.6s cubic-bezier(0.22, 0.61, 0.36, 1) 0.85s both;
+  will-change: transform, opacity;
+}
+.intro-mark {
+  opacity: 0;
+  transform-origin: 32px 32px;
+  transform: scale(0.58) rotate(-18deg);
+  animation: introMark 1.45s cubic-bezier(0.22, 0.9, 0.25, 1) 1.05s both;
+  will-change: transform, opacity;
+}
+.intro-petal-layer {
+  transform-origin: 32px 32px;
+  animation: introPetals 1.65s cubic-bezier(0.22, 0.9, 0.25, 1) 1.12s both;
+  will-change: transform, opacity;
+}
+.intro-orbit {
+  stroke-dasharray: 1;
+  stroke-dashoffset: 1;
+  animation: introOrbit 1.28s cubic-bezier(0.22, 0.61, 0.36, 1) 1.78s both;
+  will-change: stroke-dashoffset, opacity;
+}
+.intro-orbit-tip {
+  opacity: 0;
+  transform-origin: 56px 56px;
+  transform: scale(0.4);
+  animation: introTip 0.62s cubic-bezier(0.22, 0.9, 0.25, 1) 2.55s both;
+  will-change: transform, opacity;
 }
 .intro-spark {
-  animation: introSpark 0.9s ease 0.9s both;
-}
-.intro-shine {
-  position: absolute;
-  inset: 0;
-  background: linear-gradient(105deg, transparent 20%, rgba(255,255,255,0.18) 40%, transparent 60%);
-  transform: translateX(-120%);
-  animation: introShine 1.2s ease 1s both;
-}
-.intro-text {
-  font-size: 38px;
-  font-weight: 850;
-  letter-spacing: 0.22em;
-  line-height: 1;
-  background: linear-gradient(120deg, #7C3AED 0%, #A855F7 45%, #22D3EE 100%);
-  -webkit-background-clip: text;
-  background-clip: text;
-  color: transparent;
   opacity: 0;
-  transform: translateY(14px);
-  animation: introText 0.7s cubic-bezier(0.2,0.9,0.2,1) 0.55s both;
+  transform-origin: 53.5px 11.8px;
+  transform: scale(0.15);
+  animation: introSpark 1.1s cubic-bezier(0.22, 0.61, 0.36, 1) 2.48s both;
+  will-change: transform, opacity;
+}
+.intro-spark-dot {
+  opacity: 0;
+  animation: introSparkDot 1.5s ease 2.52s both;
+}
+.intro-wordmark {
+  margin-top: 18px;
+  color: #f7f4ff;
+  font-size: clamp(32px, 7vw, 52px);
+  font-weight: 800;
+  line-height: 0.95;
+  letter-spacing: 0.34em;
+  padding-left: 0.34em;
+  text-shadow: 0 0 28px rgba(192,132,252,0.22);
+  opacity: 0;
+  transform: translate3d(0, 10px, 0) scaleX(1.08);
+  animation: introWordmark 0.92s cubic-bezier(0.22, 0.61, 0.36, 1) 2.5s both;
+  will-change: transform, opacity;
 }
 .intro-sub {
-  font-size: 11px;
+  margin-top: 16px;
+  color: rgba(221,218,239,0.62);
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 1;
+  letter-spacing: 0.2em;
   text-transform: uppercase;
-  letter-spacing: 1.4px;
-  color: #6f7691;
   opacity: 0;
-  animation: introFade 0.6s ease 0.95s both;
+  transform: translate3d(0, 7px, 0);
+  animation: introSub 0.75s cubic-bezier(0.22, 0.61, 0.36, 1) 3.18s both;
+  will-change: transform, opacity;
 }
-.intro-line {
+.intro-sub span {
+  display: inline-block;
+  margin: 0 0.35em;
+  color: #67e8f9;
+}
+.intro-rule {
   width: 0;
-  height: 2px;
-  margin-top: 6px;
+  height: 1px;
+  margin-top: 23px;
   border-radius: 999px;
-  background: linear-gradient(90deg, #7C3AED, #22D3EE);
-  animation: introLine 0.7s cubic-bezier(0.2,0.9,0.2,1) 1s both;
+  background: linear-gradient(90deg, transparent, #C084FC 25%, #22D3EE 75%, transparent);
+  opacity: 0;
+  animation: introRule 1.25s cubic-bezier(0.22, 0.61, 0.36, 1) 3.28s both;
+  will-change: width, opacity;
 }
 
-@keyframes introPop {
-  from { transform: scale(0.86) translateY(10px); opacity: 0; }
-  to { transform: scale(1) translateY(0); opacity: 1; }
+@keyframes introAmbient {
+  0%, 100% { opacity: 0.5; }
+  38% { opacity: 1; }
 }
-@keyframes introStar {
-  0% { transform: scale(0.2) rotate(-18deg); opacity: 0; filter: blur(8px); }
-  60% { transform: scale(1.08) rotate(4deg); opacity: 1; filter: blur(0); }
-  100% { transform: scale(1) rotate(0); opacity: 1; }
+@keyframes introHalo {
+  0% { opacity: 0; transform: scale(0.62); }
+  22% { opacity: 0.72; }
+  56% { opacity: 0.42; transform: scale(1.08); }
+  100% { opacity: 0.16; transform: scale(1.22); }
 }
-@keyframes introTail {
-  from { transform: scaleX(0.2) translateX(-8px); opacity: 0; }
-  to { transform: scaleX(1) translateX(0); opacity: 1; }
+@keyframes introRibbon {
+  0% { opacity: 0; stroke-dashoffset: 1; }
+  18% { opacity: 0.86; }
+  70% { opacity: 0.38; stroke-dashoffset: 0; }
+  100% { opacity: 0; stroke-dashoffset: -0.34; }
+}
+@keyframes introMark {
+  0% { opacity: 0; transform: scale(0.58) rotate(-18deg); }
+  55% { opacity: 1; transform: scale(1.045) rotate(2deg); }
+  78% { transform: scale(0.988) rotate(-0.5deg); }
+  100% { opacity: 1; transform: scale(1) rotate(0); }
+}
+@keyframes introPetals {
+  0% { opacity: 0; transform: scale(0.7) rotate(-12deg); }
+  55% { opacity: 1; transform: scale(1.025) rotate(3deg); }
+  100% { opacity: 1; transform: scale(1) rotate(0); }
+}
+@keyframes introOrbit {
+  0% { opacity: 0; stroke-dashoffset: 1; }
+  20% { opacity: 1; }
+  100% { opacity: 1; stroke-dashoffset: 0; }
+}
+@keyframes introTip {
+  0% { opacity: 0; transform: scale(0.4); }
+  70% { opacity: 1; transform: scale(1.08); }
+  100% { opacity: 1; transform: scale(1); }
 }
 @keyframes introSpark {
-  0% { transform: scale(0) rotate(0); opacity: 0; }
-  70% { transform: scale(1.4) rotate(18deg); opacity: 1; }
-  100% { transform: scale(1) rotate(0); opacity: 0.95; }
+  0% { opacity: 0; transform: scale(0.15) rotate(0); }
+  42% { opacity: 1; transform: scale(1.18) rotate(90deg); }
+  100% { opacity: 0.9; transform: scale(1) rotate(180deg); }
 }
-@keyframes introShine {
-  to { transform: translateX(120%); }
+@keyframes introSparkDot {
+  0%, 22% { opacity: 0; }
+  42%, 68% { opacity: 1; }
+  100% { opacity: 0.7; }
 }
-@keyframes introText {
-  from { opacity: 0; transform: translateY(18px); letter-spacing: 0.5em; filter: blur(6px); }
-  to { opacity: 1; transform: translateY(0); letter-spacing: 0.22em; filter: blur(0); }
+@keyframes introWordmark {
+  0% { opacity: 0; transform: translate3d(0, 10px, 0) scaleX(1.08); letter-spacing: 0.48em; }
+  62% { opacity: 1; }
+  100% { opacity: 1; transform: translate3d(0, 0, 0) scaleX(1); letter-spacing: 0.34em; }
 }
-@keyframes introFade {
-  from { opacity: 0; transform: translateY(6px); }
-  to { opacity: 1; transform: translateY(0); }
+@keyframes introSub {
+  from { opacity: 0; transform: translate3d(0, 7px, 0); }
+  to { opacity: 1; transform: translate3d(0, 0, 0); }
 }
-@keyframes introLine {
-  from { width: 0; opacity: 0; }
-  to { width: 120px; opacity: 1; }
+@keyframes introRule {
+  0% { width: 0; opacity: 0; }
+  25% { opacity: 0.9; }
+  100% { width: clamp(120px, 24vw, 210px); opacity: 0.56; }
+}
+
+@media (max-width: 520px) {
+  .intro-inner { margin-top: -7vh; }
+  .intro-logo-wrap { width: min(44vw, 164px); }
+  .intro-wordmark { margin-top: 13px; font-size: 33px; letter-spacing: 0.28em; padding-left: 0.28em; }
+  .intro-sub { font-size: 8px; letter-spacing: 0.14em; }
+  .intro-rule { margin-top: 19px; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .intro-overlay *, .intro-overlay::before {
+    animation: none !important;
+    transition: none !important;
+  }
+  .intro-ribbon { opacity: 0.4; stroke-dasharray: 1; stroke-dashoffset: 0; }
+  .intro-mark, .intro-petal-layer, .intro-orbit-tip, .intro-spark,
+  .intro-spark-dot, .intro-wordmark, .intro-sub, .intro-rule {
+    opacity: 1;
+    transform: none;
+  }
+  .intro-rule { width: 150px; }
 }

@@ -3,7 +3,9 @@
 #   Qyro — ONE-CLICK installer for Android/Termux
 #
 #   Paste this single line into Termux:
-#   pkg update -y ; pkg install -y curl ; curl -sSL https://raw.githubusercontent.com/peterparker25552-star/https-github.com-divyaprakash0426-autoshorts/main/android-install.sh | bash
+#   pkg update -y && pkg install -y curl && curl -fsSL https://raw.githubusercontent.com/peterparker25552-star/https-github.com-divyaprakash0426-autoshorts/main/android-install.sh -o "$HOME/autoshorts-android-install.sh" && bash "$HOME/autoshorts-android-install.sh"
+#
+#   Download first and run second: a 404 response must never be piped to bash.
 # ============================================================
 set -e
 
@@ -43,9 +45,13 @@ chmod +x ~/start-autoshorts.sh
 mkdir -p ~/bin
 cp ~/start-autoshorts.sh ~/bin/autoshorts 2>/dev/null || true
 
+# Read the version from the checkout instead of maintaining a second,
+# easy-to-stale version string in this installer.
+APP_VERSION="$(python -c 'from autoshorts import __version__; print(__version__)' 2>/dev/null || printf '%s' 'unknown')"
+
 echo
 echo "============================================================"
-echo "  ✅ Qyro v0.6.1 is installed!"
+echo "  ✅ Qyro v${APP_VERSION} is installed!"
 echo
 echo "  TO START IT (any time):"
 echo "     open Termux and type:  bash ~/start-autoshorts.sh"

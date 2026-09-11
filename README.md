@@ -16,6 +16,13 @@ playlist URL ──▶ yt-dlp ──▶ transcripts ──▶ highlight engine �
                  captions)                     questions · energy)   burned-in captions)
 ```
 
+## What's new in v0.6.2 — a cinematic Qyro identity
+
+- **Original orbit logo.** A soft six-petal form, open Q-shaped orbit, curved cyan tail and cross-spark replace the old star/play mark. The same vector geometry is used by the header, intro, favicon and regenerated PWA icons.
+- **Premium studio intro.** A black ribbon sweep reveals the mark, QYRO wordmark and descriptor in a paced 5.6-second sequence, then fades cleanly into the app. It is Netflix-inspired in pacing, but uses original Qyro artwork and sound.
+- **Longer, synchronized sound.** A single WebAudio context now builds the whoosh, two-note hit and a 5.5-second bass/resonance tail. Mobile autoplay unlocks the same scheduled sound on the first gesture, so repeated clicks cannot create overlapping or prematurely cut-off effects.
+- **Smoother mobile transition.** The intro avoids animated blur and backdrop filters; its reveal uses compositor-friendly opacity, transforms and stroke offsets. The service-worker shell name is bumped so installed PWAs fetch the new intro assets.
+
 ## What's new in v0.6.1 — the camera follows the *speaker*
 
 - **Speaker-aware tracking.** v0.6.0 followed *a* person: the biggest face in
@@ -187,12 +194,19 @@ It opens at <http://localhost:8000> — keep the black window open while using i
 1. Install [Termux from F-Droid](https://f-droid.org/packages/com.termux/) (the Play Store build is outdated — don't use it)
 2. Easiest — paste this one line into Termux and wait:
 
+> **Use the repository URL below exactly.** This Qyro build is published at
+> `peterparker25552-star/https-github.com-divyaprakash0426-autoshorts`. The
+> separate `divyaprakash0426/autoshorts` repository does not contain
+> `android-install.sh`, so its raw URL returns a 404.
+
 ```bash
-pkg update -y ; pkg install -y curl ; curl -sSL https://raw.githubusercontent.com/peterparker25552-star/https-github.com-divyaprakash0426-autoshorts/main/android-install.sh | bash
+pkg update -y && pkg install -y curl && curl -fsSL https://raw.githubusercontent.com/peterparker25552-star/https-github.com-divyaprakash0426-autoshorts/main/android-install.sh -o "$HOME/autoshorts-android-install.sh" && bash "$HOME/autoshorts-android-install.sh"
 ```
 
-It installs everything, then start the app any time with
-`bash ~/start-autoshorts.sh`.
+The download uses `curl --fail` and saves the file before running it. If the
+URL is ever wrong, it stops with a curl error instead of passing GitHub's
+`404: Not Found` response to Bash. It installs everything, then start the app
+any time with `bash ~/start-autoshorts.sh`.
 
 Or do it by hand:
 
