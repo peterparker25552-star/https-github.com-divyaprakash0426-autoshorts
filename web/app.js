@@ -2255,7 +2255,8 @@ function initIntro() {
   if (!overlay) return;
   let seen = false;
   try { seen = sessionStorage.getItem("qyro.introSeen") === "1"; } catch (error) {}
-  if (seen) {
+  const replay = new URLSearchParams(window.location.search).get("intro") === "1";
+  if (seen && !replay) {
     overlay.classList.add("dismissed");
     return;
   }

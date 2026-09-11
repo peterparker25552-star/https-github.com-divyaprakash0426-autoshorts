@@ -28,7 +28,7 @@ This guide covers what changed in **v6.2** and how to install it after the PR is
    - The logo is original Qyro geometry; the pacing is inspired by premium streaming idents without copying Netflix artwork or its trademark sound.
    - CSS animates only opacity, transforms and stroke offsets — no animated blur or backdrop filters — to keep the transition smooth on Termux phones.
    - WebAudio uses one unlocked context, a compressor, an audible two-note hit, a ribbon whoosh and a long 5.5-second bass/resonance tail. Repeated pointer events cannot stack or cut off the sound.
-   - `initIntro()` still shows once per browser session via `sessionStorage`, auto-dismisses after 5.6s, and lets the user tap to skip.
+   - `initIntro()` still shows once per browser session via `sessionStorage`, auto-dismisses after 5.6s, and lets the user tap to skip. For a preview after it has already played, open `http://localhost:8000/?intro=1`.
 
 ## Install / upgrade steps after PR merge
 
