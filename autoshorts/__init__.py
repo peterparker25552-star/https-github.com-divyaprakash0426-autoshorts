@@ -25,7 +25,13 @@ canvas-painted and driven by a live WebAudio analyser, and the ta-dum is
 synthesised at runtime (ta, dum, sub, riser, a per-beam arpeggio, a resolving
 chord) through a generated reverb. Audio unlock is now gesture-safe: a tap that
 exists only to satisfy autoplay starts the score *and* holds the frame so the
-hit lands on the burst, instead of cancelling the cue the way v6.2 did."""
+hit lands on the burst, instead of cancelling the cue the way v6.2 did.
 
-__version__ = "0.6.3"
+v0.6.4 "ion": a new logo — a chrome crescent Q lit by an electric-blue rim
+glow, crossed by a blade tail, wrapped in a thin orbit with a four-point spark
+— and the whole UI retuned to match it. Violet/cyan gives way to ion blue
+#1E5BFF, ice chrome #9FC9FF and deep space black #01030B across every surface,
+button, glow and focus ring. Colour only: no behaviour changed."""
+
+__version__ = "0.6.4"
 APP_NAME = "Qyro"

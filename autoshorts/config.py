@@ -13,15 +13,16 @@ from pathlib import Path
 
 # --- Brand -----------------------------------------------------------------
 APP_NAME = "Qyro"
-APP_VERSION = "0.6.3"
+APP_VERSION = "0.6.4"
 APP_TAGLINE = "long podcasts → captioned vertical shorts"
 BRAND_CREDIT = "Made with Qyro"
 
-# Brand gradient (violet -> cyan) on near-black. One place for CSS, SVG,
-# manifest and README so the logo never drifts from the UI.
-BRAND_VIOLET = "#7C3AED"
-BRAND_CYAN = "#22D3EE"
-BRAND_BG = "#0A0A0F"
+# Brand gradient (ion blue -> ice chrome) on deep space black, taken from the
+# v6.4 logo. One place for CSS, SVG, manifest and README so the logo never
+# drifts from the UI. The names are kept for backwards compatibility.
+BRAND_VIOLET = "#1E5BFF"
+BRAND_CYAN = "#9FC9FF"
+BRAND_BG = "#01030B"
 
 # --- Paths -----------------------------------------------------------------
 BASE_DIR = Path(__file__).resolve().parent.parent

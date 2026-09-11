@@ -647,7 +647,7 @@ class PwaAndAssetTests(unittest.TestCase):
     def test_index_is_branded(self):
         html = (WEB / "index.html").read_text(encoding="utf-8")
         self.assertIn("<title>Qyro", html)
-        self.assertIn('name="theme-color" content="#0A0A0F"', html)
+        self.assertIn('name="theme-color" content="#01030B"', html)
         self.assertIn("manifest.webmanifest", html)
         self.assertIn("apple-touch-icon", html)
         self.assertIn('data-logo="1"', html)
@@ -657,7 +657,7 @@ class PwaAndAssetTests(unittest.TestCase):
         manifest = json.loads((WEB / "manifest.webmanifest").read_text(encoding="utf-8"))
         self.assertEqual(manifest["name"], "Qyro")
         self.assertEqual(manifest["short_name"], "Qyro")
-        self.assertEqual(manifest["theme_color"].upper(), "#0A0A0F")
+        self.assertEqual(manifest["theme_color"].upper(), "#01030B")
         self.assertEqual(manifest["display"], "standalone")
         sizes = {tuple(sorted(i["sizes"].split("x"))) for i in manifest["icons"]}
         self.assertIn(("192", "192"), sizes)
@@ -694,7 +694,7 @@ class PwaAndAssetTests(unittest.TestCase):
     def test_logo_assets_exist_and_are_crisp(self):
         svg = (WEB / "logo.svg").read_text(encoding="utf-8")
         self.assertIn("viewBox=\"0 0 64 64\"", svg)
-        for colour in ("#7C3AED", "#22D3EE", "#0A0A0F"):
+        for colour in (config.BRAND_VIOLET, config.BRAND_CYAN, config.BRAND_BG):
             self.assertIn(colour, svg)
         icons = WEB / "icons"
         for name in ("icon-192.png", "icon-512.png", "icon-maskable-192.png",
