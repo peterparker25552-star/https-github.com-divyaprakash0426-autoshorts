@@ -6,6 +6,11 @@ graphs, caption brands, the free engine's fallbacks, the media prober) and
 ``test_http_v050`` (every new route on both servers, the PWA assets, the
 no-emoji rule and one real 1440p end-to-end render).
 
+v0.6.0 added ``test_units_v060`` (the subject tracker's maths, caption
+fonts/animations/languages, transitions, the quality gate, option validation)
+and ``test_http_v060`` (the new API surface plus a real render that measures
+where the subject lands with tracking on and off).
+
 Usage:  python -m tests.run_all   (or python tests/run_all.py from the repo)
 """
 from __future__ import annotations
@@ -57,6 +62,8 @@ def main() -> int:
         "tests.test_http_fastapi",
         "tests.test_http_stdlib",
         "tests.test_http_v050",
+        "tests.test_units_v060",
+        "tests.test_http_v060",
     ):
         suite.addTests(loader.loadTestsFromName(module))
     runner = unittest.TextTestRunner(verbosity=1)

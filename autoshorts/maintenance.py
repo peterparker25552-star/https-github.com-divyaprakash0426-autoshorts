@@ -44,9 +44,18 @@ RENDER_DEFAULTS = {
     "audio_mix": config.DEFAULT_AUDIO_MIX,             # T3 replace | duck
     "silence_noise": config.DEFAULT_SILENCE_NOISE,     # T6 silence tuner
     "silence_min": config.DEFAULT_SILENCE_MIN,         # T6 silence tuner
+    # --- v0.6.0 (all optional; defaults keep the v0.5.0 render path) --------
+    "captions_font": config.DEFAULT_CAPTION_FONT,      # resolved font id
+    "captions_anim": config.DEFAULT_CAPTION_ANIM,      # caption animation
+    "transition": config.DEFAULT_TRANSITION,           # clip-edge transition
+    "track_mode": config.DEFAULT_TRACK_MODE,           # subject tracking
+    "track_zoom": config.DEFAULT_TRACK_ZOOM,           # framing tightness
+    "language": config.DEFAULT_LANGUAGE,               # caption/subtitle lang
+    "quality_gate": config.QUALITY_GATE_DEFAULT,       # "only the good parts"
 }
 
-_FLAG_KEYS = ("progress", "silence", "loud", "captions_box", "sync_beats")
+_FLAG_KEYS = ("progress", "silence", "loud", "captions_box", "sync_beats",
+              "quality_gate")
 _CHOICES = {
     "style": config.STYLES,
     "quality": config.QUALITIES,
@@ -55,6 +64,12 @@ _CHOICES = {
     "captions_pos": config.CAPTION_POSITIONS,
     "captions_brand": config.CAPTION_BRANDS,
     "audio_mix": config.AUDIO_MIXES,
+    "captions_font": config.CAPTION_FONTS,
+    "captions_anim": config.CAPTION_ANIMS,
+    "transition": config.TRANSITIONS,
+    "track_mode": config.TRACK_MODES,
+    "track_zoom": config.TRACK_ZOOMS,
+    "language": config.LANGUAGES,
 }
 # Render options that carry a structured value rather than a scalar.
 _LOGO_KEY = "logo_box"
@@ -160,7 +175,9 @@ def render_opts_from(body: dict, base: dict | None = None) -> dict:
             opts[key] = value
 
     for key in ("style", "quality", "format", "captions", "captions_pos",
-                "captions_brand", "audio_mix"):
+                "captions_brand", "audio_mix", "captions_font",
+                "captions_anim", "transition", "track_mode", "track_zoom",
+                "language"):
         if key not in body:
             continue
         value = body[key]
@@ -237,7 +254,9 @@ def render_opts_from(body: dict, base: dict | None = None) -> dict:
 
     # Stored/replayed bases can be stale — normalise before use.
     for key in ("style", "quality", "format", "captions", "captions_pos",
-                "captions_brand", "audio_mix"):
+                "captions_brand", "audio_mix", "captions_font",
+                "captions_anim", "transition", "track_mode", "track_zoom",
+                "language"):
         if opts[key] not in _CHOICES[key]:
             opts[key] = RENDER_DEFAULTS[key]
     if opts.get(_TRACK_KEY) and not audioswap.get_track(str(opts[_TRACK_KEY])):
@@ -1361,6 +1380,84 @@ def restore_state(store: Store, data) -> dict:
 # Versions (cached)
 # --------------------------------------------------------------------------
 _versions_cache: tuple[float, dict] = (0.0, {})
+
+
+def render_options_catalog() -> dict:
+    """Every v0.6.0 render choice the UI needs to build its pickers.
+
+    Transport-agnostic so both servers answer ``/api/health`` identically.
+    Font entries carry the family they *resolve to* on this machine plus an
+    ``installed`` flag, and ``devanagari_ready`` tells the UI whether Hindi
+    captions will actually draw (a missing Devanagari font renders boxes).
+    """
+    from . import fonts as fonts_mod
+
+    return {
+        "fonts": fonts_mod.available_fonts(),
+        "anims": [
+            {"id": name, "label": config.CAPTION_ANIM_LABELS.get(name, name)}
+            for name in config.CAPTION_ANIMS
+        ],
+        "transitions": [
+            {"id": name, "label": config.TRANSITION_LABELS.get(name, name)}
+            for name in config.TRANSITIONS
+        ],
+        "track_modes": [
+            {"id": "auto", "label": "Track the person (recommended)"},
+            {"id": "vision", "label": "Track — built-in vision only"},
+            {"id": "face", "label": "Track — face model (needs OpenCV)"},
+            {"id": "off", "label": "Classic thirds crop"},
+        ],
+        "track_zooms": [
+            {"id": "auto", "label": "Auto framing"},
+            {"id": "tight", "label": "Tight (punch in)"},
+            {"id": "normal", "label": "Normal"},
+            {"id": "wide", "label": "Wide (no zoom)"},
+        ],
+        "languages": [
+            {"id": name, "label": config.LANGUAGE_LABELS.get(name, name)}
+            for name in config.LANGUAGES
+        ],
+        "devanagari_ready": fonts_mod.has_devanagari_font(),
+        "fonts_dir": str(config.FONTS_DIR),
+        "face_model_ready": _face_model_ready(),
+    }
+
+
+def fonts_install(force: bool = False) -> dict:
+    """Install the bundled Hindi/Devanagari fonts into the user font dir.
+
+    Returns ``{"ok": bool, "installed": [...], "detail": str}``. Never raises:
+    on a machine with no network and no bundled fonts the UI still needs a
+    plain answer so it can keep offering the English fonts.
+    """
+    from . import fonts as fonts_mod
+
+    try:
+        result = fonts_mod.ensure_installed(force=bool(force))
+    except Exception as exc:                       # pragma: no cover - defensive
+        return {"ok": False, "installed": [], "detail": str(exc)}
+    installed = list(result.get("installed") or [])
+    ready = fonts_mod.has_devanagari_font()
+    return {
+        "ok": ready,
+        "installed": installed,
+        "copied_to": result.get("target") or "",
+        "detail": result.get("detail")
+        or ("Devanagari fonts installed" if ready else
+            "no bundled font found; captions fall back to the default family"),
+        "devanagari_ready": ready,
+    }
+
+
+def _face_model_ready() -> bool:
+    """True when the optional OpenCV face backend can actually run."""
+    try:
+        from . import vision
+
+        return vision.cv2_available()
+    except Exception:
+        return False
 
 
 def versions_info(ttl: float = VERSIONS_TTL) -> dict:

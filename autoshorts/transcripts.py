@@ -17,6 +17,11 @@ class Segment:
     start: float
     end: float
     text: str
+    # Optional per-word timings ``(word, start, end)``. YouTube's json3
+    # (``segs[].tOffsetMs``) and tagged WebVTT (``<00:00:01.000>``) both carry
+    # them; when present the caption engine times every chunk from the real
+    # words instead of dividing the line evenly, so captions stop drifting.
+    words: list = field(default_factory=list)
 
     @property
     def duration(self) -> float:
@@ -34,8 +39,40 @@ def _clean(text: str) -> str:
     return _WS.sub(" ", text).strip()
 
 
+def _json3_words(segs: list, start: float, end: float) -> list:
+    """``(word, start, end)`` triples from a json3 event's ``segs``.
+
+    YouTube only puts ``tOffsetMs`` on some segments; a word without one keeps
+    the previous word's clock. Returns ``[]`` when nothing is timed, so the
+    caller falls back to even splitting.
+    """
+    # Without a single tOffsetMs there is no real timing to use, and inventing
+    # one (every word "spoken" at the line start) is worse than even splitting.
+    if not any(seg.get("tOffsetMs") is not None for seg in segs):
+        return []
+    out: list = []
+    cursor = float(start)
+    for seg in segs:
+        text = _clean(str(seg.get("utf8") or ""))
+        if not text:
+            continue
+        offset = seg.get("tOffsetMs")
+        if offset is not None:
+            try:
+                cursor = float(start) + float(offset) / 1000.0
+            except (TypeError, ValueError):
+                pass
+        out.append([text, max(cursor, float(start)), 0.0])
+    if not out:
+        return []
+    for index in range(len(out) - 1):
+        out[index][2] = max(out[index + 1][1], out[index][1] + 0.04)
+    out[-1][2] = max(float(end), out[-1][1] + 0.04)
+    return [tuple(item) for item in out]
+
+
 def parse_json3(raw: str | bytes) -> list[Segment]:
-    """Parse YouTube json3 timedtext into line-level segments."""
+    """Parse YouTube json3 timedtext into line-level segments (+ word times)."""
     data = json.loads(raw)
     segments: list[Segment] = []
     prev_text = None
@@ -47,9 +84,61 @@ def parse_json3(raw: str | bytes) -> list[Segment]:
             continue
         start = ev.get("tStartMs", 0) / 1000.0
         dur = ev.get("dDurationMs", 0) / 1000.0
-        segments.append(Segment(start, start + max(dur, 0.5), text))
+        end = start + max(dur, 0.5)
+        segments.append(
+            Segment(start, end, text, _json3_words(ev["segs"], start, end))
+        )
         prev_text = text
     return segments
+
+
+_VTT_STAMP = re.compile(r"<(\d{1,2}:\d{2}:\d{2}\.\d{3})>")
+_VTT_TAGS = re.compile(r"</?(?:c|v[^>]*|b|i|u|lang[^>]*)>")
+
+
+def _vtt_ts(tok: str) -> float:
+    h, m, rest = tok.split(":")
+    sec, ms = rest.split(".")
+    return int(h) * 3600 + int(m) * 60 + int(sec) + int(ms) / 1000.0
+
+
+def strip_vtt_markup(body: str) -> str:
+    """Remove inline ``<00:00:01.000>``/``<c>`` tags, keeping the words.
+
+    YouTube's auto-caption VTT wraps every word in markup; without this the
+    raw timestamps end up burned into the caption.
+    """
+    return _clean(_VTT_TAGS.sub(" ", _VTT_STAMP.sub(" ", str(body or ""))))
+
+
+def _vtt_words(body: str, start: float, end: float) -> list:
+    """``(word, start, end)`` triples from inline ``<00:00:01.000>`` tags.
+
+    YouTube's auto-caption VTT timestamps each word inside the cue; the text
+    between two stamps belongs to the earlier one. A cue without stamps yields
+    ``[]`` so the caption engine falls back to even splitting.
+    """
+    body = str(body or "")
+    marks = list(_VTT_STAMP.finditer(body))
+    if not marks:
+        return []
+    out: list = []
+    for index, match in enumerate(marks):
+        stop = marks[index + 1].start() if index + 1 < len(marks) else len(body)
+        text = strip_vtt_markup(body[match.end():stop])
+        if not text:
+            continue
+        try:
+            stamp = _vtt_ts(match.group(1))
+        except Exception:
+            continue
+        out.append([text, max(stamp, float(start)), 0.0])
+    if not out:
+        return []
+    for index in range(len(out) - 1):
+        out[index][2] = max(out[index + 1][1], out[index][1] + 0.04)
+    out[-1][2] = max(float(end), out[-1][1] + 0.04)
+    return [tuple(item) for item in out]
 
 
 def parse_vtt(raw: str) -> list[Segment]:
@@ -72,10 +161,11 @@ def parse_vtt(raw: str) -> list[Segment]:
             start, end = ts(start_tok), ts(end_tok.split()[0])
         except Exception:
             continue
-        text = _clean(" ".join(text_lines))
+        joined = " ".join(text_lines)
+        text = strip_vtt_markup(joined)
         if not text or text in (s.text for s in segments[-3:]):
             continue  # rolling auto-caption dedupe
-        segments.append(Segment(start, end, text))
+        segments.append(Segment(start, end, text, _vtt_words(joined, start, end)))
     return segments
 
 
@@ -189,13 +279,22 @@ def to_sentences(segments: Iterable[Segment], max_gap: float = 1.8) -> list[Sent
 def segments_for_window(
     segments: list[Segment], start: float, end: float
 ) -> list[Segment]:
-    """Caption lines overlapping [start, end], trimmed to the window."""
+    """Caption lines overlapping [start, end], trimmed to the window.
+
+    Per-word timings survive the trim (words outside the window are dropped)
+    so the caption engine still lands on the real syllables at a clip edge.
+    """
     out: list[Segment] = []
     for s in segments:
         if s.end <= start or s.start >= end:
             continue
+        words = [
+            (w, max(float(ws), start), min(float(we), end))
+            for (w, ws, we) in (getattr(s, "words", None) or [])
+            if float(we) > start and float(ws) < end
+        ]
         out.append(
-            Segment(max(s.start, start), min(s.end, end), s.text)
+            Segment(max(s.start, start), min(s.end, end), s.text, words)
         )
     return out
 

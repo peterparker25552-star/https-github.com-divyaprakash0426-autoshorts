@@ -13,7 +13,7 @@ from pathlib import Path
 
 # --- Brand -----------------------------------------------------------------
 APP_NAME = "Qyro"
-APP_VERSION = "0.5.0"
+APP_VERSION = "0.6.0"
 APP_TAGLINE = "long podcasts → captioned vertical shorts"
 BRAND_CREDIT = "Made with Qyro"
 
@@ -31,9 +31,13 @@ CLIPS_DIR = DATA_DIR / "clips"        # rendered shorts
 THUMBS_DIR = DATA_DIR / "thumbs"      # clip thumbnails + pick candidates
 AUDIO_DIR = DATA_DIR / "audio"        # user audio tracks + extracted mp3s
 SUBS_DIR = DATA_DIR / "subs"          # raw + normalized transcripts
+FONTS_DIR = DATA_DIR / "fonts"        # user-supplied caption fonts (.ttf/.otf)
+MODELS_DIR = Path(__file__).resolve().parent / "models"   # optional AI models
+TRACK_CACHE_DIR = DATA_DIR / "cache"  # cached subject-tracking analyses
 STATE_FILE = DATA_DIR / "state.json"
 
-for _d in (DATA_DIR, MEDIA_DIR, CLIPS_DIR, THUMBS_DIR, SUBS_DIR, AUDIO_DIR):
+for _d in (DATA_DIR, MEDIA_DIR, CLIPS_DIR, THUMBS_DIR, SUBS_DIR, AUDIO_DIR,
+           FONTS_DIR, TRACK_CACHE_DIR):
     _d.mkdir(parents=True, exist_ok=True)
 
 # --- ffmpeg ----------------------------------------------------------------
@@ -177,6 +181,7 @@ LOGO_FEATHER_RANGE = (0, 24)    # delogo band width (px); 0 = hard box
 DEFAULT_LOGO_SIZE = "M"
 DEFAULT_LOGO_FEATHER = 8
 
+
 # --- v0.5.0 beat sync + audio swap -----------------------------------------
 BEAT_MIN_GAP = 0.24             # never closer than ~250 BPM
 BEAT_NEIGHBOURS = 4             # a peak must beat its +-N samples
@@ -226,3 +231,133 @@ SUB_LANG_CHAIN = ["en", "hi", "en-orig", "en.*", "hi.*"]
 LLM_API_KEY = os.environ.get("OPENAI_API_KEY", "")
 LLM_BASE_URL = os.environ.get("OPENAI_BASE_URL", "https://api.openai.com/v1")
 LLM_MODEL = os.environ.get("OPENAI_MODEL", "gpt-4o-mini")
+
+# ==========================================================================
+# v0.6.0 — subject tracking, caption fonts/animations, languages, transitions
+# ==========================================================================
+
+# --- Subject tracking (the "keep the person in frame" engine) ---------------
+# ``auto`` uses a real Haar face cascade when OpenCV + a cascade file are both
+# installed and otherwise falls back to the built-in ffmpeg skin+motion heat
+# map; ``vision`` forces the built-in tracker (no OpenCV at all); ``face``
+# demands the cascade and gives up (static crop) when it is missing; ``off``
+# keeps the v0.5.0 left/center/right thirds behaviour.
+TRACK_MODES = ("auto", "vision", "face", "off")
+DEFAULT_TRACK_MODE = "auto"
+TRACK_ZOOMS = ("auto", "tight", "normal", "wide")
+DEFAULT_TRACK_ZOOM = "auto"
+TRACK_FPS = 5.0                    # analysis frames per second
+TRACK_EPSILON = 0.006              # path simplification tolerance (normalised)
+TRACK_MAX_KEYFRAMES = 64           # caps the generated ffmpeg expression depth
+
+# --- Caption fonts ----------------------------------------------------------
+# A font *id*, not a font name: Qyro resolves the id against the fonts actually
+# installed on the machine (``fc-list`` when available) and walks the stack
+# until it finds one, so the same job renders on a phone, a Mac and Windows.
+CAPTION_FONTS = (
+    "auto", "bold", "rounded", "condensed", "serif", "mono",
+    "impact", "hand", "devanagari", "devanagari-serif",
+)
+DEFAULT_CAPTION_FONT = "auto"
+
+FONT_STACKS = {
+    "auto": [],                       # keep config.CAPTION_FONT
+    "bold": ["Montserrat ExtraBold", "Montserrat", "Archivo Black",
+             "Poppins SemiBold", "Poppins", "DejaVu Sans"],
+    "rounded": ["Nunito", "Baloo 2", "Quicksand", "Comic Sans MS",
+                "DejaVu Sans"],
+    "condensed": ["Oswald", "Barlow Condensed", "Roboto Condensed",
+                  "DejaVu Sans Condensed", "DejaVu Sans"],
+    "serif": ["Playfair Display", "Merriweather", "Georgia",
+              "DejaVu Serif"],
+    "mono": ["JetBrains Mono", "Fira Code", "DejaVu Sans Mono"],
+    "impact": ["Impact", "Anton", "Haettenschweiler", "Archivo Black",
+               "DejaVu Sans"],
+    "hand": ["Caveat", "Patrick Hand", "Kalam", "Comic Sans MS",
+             "DejaVu Sans"],
+    "devanagari": ["Noto Sans Devanagari", "Mukta", "Mangal", "Nirmala UI",
+                   "Kohinoor Devanagari", "Shobhika", "Hind"],
+    "devanagari-serif": ["Noto Serif Devanagari", "Tiro Devanagari Hindi",
+                         "Shobhika", "Kohinoor Devanagari", "Mangal"],
+}
+# Fonts that can actually draw Devanagari. Used to auto-rescue Hindi captions
+# when the chosen font only has Latin glyphs (otherwise every word is tofu).
+DEVANAGARI_FONTS = (
+    "Noto Sans Devanagari", "Noto Serif Devanagari", "Mukta", "Mangal",
+    "Nirmala UI", "Kohinoor Devanagari", "Shobhika", "Hind",
+    "Tiro Devanagari Hindi", "Sanskrit Text", "Devanagari",
+)
+FONT_EXTENSIONS = (".ttf", ".otf", ".ttc", ".otc")
+
+# --- Caption animation ------------------------------------------------------
+# libass override tags burned into every Dialogue line. Each entry maps to the
+# tag prefix Qyro emits; ``karaoke`` additionally re-times the words with \k.
+CAPTION_ANIMS = (
+    "none", "fade", "pop", "zoom", "bounce", "glow", "blurin",
+    "karaoke", "drop",
+)
+DEFAULT_CAPTION_ANIM = "fade"
+CAPTION_ANIM_LABELS = {
+    "none": "No animation",
+    "fade": "Fade in / out",
+    "pop": "Pop in (word punch)",
+    "zoom": "Zoom settle",
+    "bounce": "Bounce",
+    "glow": "Glow pulse",
+    "blurin": "Blur in",
+    "karaoke": "Karaoke sweep",
+    "drop": "Drop in",
+}
+ANIM_FADE_MS = (110, 110)          # \fad(in, out)
+ANIM_POP_MS = 150
+ANIM_KARAOKE_CS = 40               # centiseconds per word for \k timing
+
+# --- Clip transitions -------------------------------------------------------
+# Every variant only touches the clip's first/last frames and is
+# *duration-preserving*, so burned-in captions can never drift out of sync.
+# Jump cuts stay hard cuts on purpose: cross-fading 30 rapid speech cuts turns
+# a punchy short into mush, which is why there is no xfade option.
+TRANSITIONS = ("none", "fade", "dip", "flash", "slide")
+DEFAULT_TRANSITION = "fade"
+TRANSITION_LABELS = {
+    "none": "No transition",
+    "fade": "Fade to black",
+    "dip": "Dip to white",
+    "flash": "Opening flash",
+    "slide": "Slide up",
+}
+TRANSITION_SECONDS = 0.28          # edge fade / dip length
+TRANSITION_XFADE_SECONDS = 0.18    # cross-fade between jump-cut segments
+TRANSITION_MAX_XFADE = 60          # beyond this many cuts, xfade is skipped
+
+# --- Languages --------------------------------------------------------------
+# ``language`` drives three things: which subtitle language is requested from
+# YouTube, how captions are chunked/cased, and which font is auto-selected.
+LANGUAGES = ("auto", "en", "hi", "hinglish")
+DEFAULT_LANGUAGE = "auto"
+LANGUAGE_LABELS = {
+    "auto": "Auto-detect",
+    "en": "English",
+    "hi": "हिन्दी (Hindi)",
+    "hinglish": "Hinglish",
+}
+LANGUAGE_SUBS = {          # subtitle language chain per choice (429-safe order)
+    "en": ["en", "en-orig", "en.*"],
+    "hi": ["hi", "hi.*", "en"],
+    "hinglish": ["hi", "en", "hi.*", "en.*"],
+    "auto": ["en", "hi", "en-orig", "en.*", "hi.*"],
+}
+DEVANAGARI_RANGE = (0x0900, 0x097F)
+# Hindi reads better with more words on screen and no ALL-CAPS shouting.
+HINDI_WORDS_PER_LINE = 6
+HINDI_FONT_SIZE_SCALE = 1.10
+
+# --- "Only the good parts" quality gate -------------------------------------
+# Applied to every automatic highlight before it is rendered: dead air at the
+# edges is trimmed, windows that are mostly silence are re-scored, and the
+# first/last partial words are pushed to the nearest transcript boundary.
+QUALITY_GATE_DEFAULT = True
+TRIM_EDGE_SILENCE = 0.35           # trim pauses longer than this at the edges
+MIN_SPEECH_RATIO = 0.55            # below this, the window is penalised
+MAX_INNER_SILENCE = 2.5            # a single pause longer than this = penalty
+QUALITY_PENALTY = 0.55             # score multiplier for a failing window

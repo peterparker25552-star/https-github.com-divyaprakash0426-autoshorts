@@ -23,7 +23,8 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parent.parent
 WEB = REPO_ROOT / "web"
 
-from autoshorts import audioswap, config, maintenance, pipeline as pipeline_mod
+from autoshorts import (__version__ as autoshorts_version, audioswap, config,
+                        maintenance, pipeline as pipeline_mod)
 from autoshorts.server import app, pipeline, store
 from autoshorts.store import Store
 from fastapi.testclient import TestClient
@@ -441,7 +442,7 @@ class SettingsMaskingTests(V050Fixture):
     def test_health_reports_the_brand(self):
         body = self.client.get("/api/health").json()
         self.assertEqual(body["app"], "Qyro")
-        self.assertEqual(body["version"], "0.5.0")
+        self.assertEqual(body["version"], autoshorts_version)
         self.assertIn("engine", body)
         self.assertIn("llm_available", body)
 
@@ -772,7 +773,7 @@ class StdlibV050Tests(unittest.TestCase):
         status, body, _ = self.get("/api/health")
         self.assertEqual(status, 200)
         self.assertEqual(body["app"], "Qyro")
-        self.assertEqual(body["version"], "0.5.0")
+        self.assertEqual(body["version"], autoshorts_version)
         self.assertEqual(body["brand"], "Qyro")
         self.assertEqual(body["engine"]["provider"], "offline")
 
