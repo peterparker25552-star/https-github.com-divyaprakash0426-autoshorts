@@ -16,8 +16,16 @@ timeouts and retries were fixed so "AI unavailable during render" only shows
 up when the engine genuinely cannot answer.
 
 v0.6.2: new Claude+Grok-inspired logo, captions on/off toggle, flicker-free
-Generate buttons (no animation thrash during fastPoll), and Netflix-style
-intro animation + ta-dum sound on first open."""
+Generate buttons (no animation thrash during fastPoll), and the first cut of a
+streaming-style intro.
 
-__version__ = "0.6.2"
+v0.6.3 "spectrum ident": the intro is rebuilt as a glowing Q on black that
+bursts outward into a full spectrum of vertical light beams. The beams are
+canvas-painted and driven by a live WebAudio analyser, and the ta-dum is
+synthesised at runtime (ta, dum, sub, riser, a per-beam arpeggio, a resolving
+chord) through a generated reverb. Audio unlock is now gesture-safe: a tap that
+exists only to satisfy autoplay starts the score *and* holds the frame so the
+hit lands on the burst, instead of cancelling the cue the way v6.2 did."""
+
+__version__ = "0.6.3"
 APP_NAME = "Qyro"

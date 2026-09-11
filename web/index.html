@@ -18,62 +18,48 @@
 <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
-<div id="introOverlay" class="intro-overlay" aria-hidden="true">
-  <div class="intro-ambient" aria-hidden="true"></div>
-  <svg class="intro-ribbons" viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden="true">
-    <defs>
-      <linearGradient id="introRibbonGradient" x1="0" y1="0" x2="1" y2="1">
-        <stop offset="0" stop-color="#7C3AED" stop-opacity="0"/>
-        <stop offset="0.46" stop-color="#C084FC" stop-opacity="0.85"/>
-        <stop offset="0.72" stop-color="#22D3EE" stop-opacity="0.66"/>
-        <stop offset="1" stop-color="#22D3EE" stop-opacity="0"/>
-      </linearGradient>
-    </defs>
-    <path class="intro-ribbon ribbon-a" pathLength="1" d="M-8 78C18 22 35 12 52 49S82 90 108 22"/>
-    <path class="intro-ribbon ribbon-b" pathLength="1" d="M-12 36C19 88 35 88 53 47S83 8 112 71"/>
-    <path class="intro-ribbon ribbon-c" pathLength="1" d="M-8 57C22 25 41 25 58 53S83 80 108 44"/>
-    <path class="intro-ribbon ribbon-d" pathLength="1" d="M-10 93C26 63 38 5 61 29S83 68 110 9"/>
-  </svg>
-  <div class="intro-inner">
-    <div class="intro-logo-wrap">
-      <div class="intro-halo" aria-hidden="true"></div>
-      <svg viewBox="0 0 64 64" class="intro-logo" aria-hidden="true" focusable="false">
-        <defs>
-          <linearGradient id="ig" x1="8" y1="6" x2="56" y2="58" gradientUnits="userSpaceOnUse">
-            <stop offset="0%" stop-color="#7C3AED"/>
-            <stop offset="0.48" stop-color="#C084FC"/>
-            <stop offset="1" stop-color="#22D3EE"/>
-          </linearGradient>
-          <linearGradient id="ig2" x1="36" y1="38" x2="58" y2="58" gradientUnits="userSpaceOnUse">
-            <stop offset="0%" stop-color="#C084FC"/>
-            <stop offset="1" stop-color="#22D3EE"/>
-          </linearGradient>
-          <path id="ipetal" d="M32 30.5C26.8 27.1 24.8 18.4 29.1 8.9C30.2 6.4 33.8 6.4 34.9 8.9C39.2 18.4 37.2 27.1 32 30.5Z"/>
-          <mask id="icut" maskUnits="userSpaceOnUse">
-            <rect width="64" height="64" fill="#fff"/>
-            <path d="M36 33C47 36 58 45 68 57L59 68L38 49Z" fill="#000"/>
-            <circle cx="32" cy="32" r="7.2" fill="#000"/>
-          </mask>
-        </defs>
-        <g class="intro-mark" mask="url(#icut)">
-          <g class="intro-petal-layer" fill="url(#ig)">
-            <use class="intro-petal petal-a" href="#ipetal" transform="rotate(0 32 32)"/>
-            <use class="intro-petal petal-b" href="#ipetal" transform="rotate(60 32 32)"/>
-            <use class="intro-petal petal-c" href="#ipetal" transform="rotate(120 32 32)"/>
-            <use class="intro-petal petal-d" href="#ipetal" transform="rotate(180 32 32)"/>
-            <use class="intro-petal petal-e" href="#ipetal" transform="rotate(240 32 32)"/>
-            <use class="intro-petal petal-f" href="#ipetal" transform="rotate(300 32 32)"/>
-          </g>
-        </g>
-        <path class="intro-orbit" pathLength="1" d="M38 39C44 42 50 48 57 57" fill="none" stroke="url(#ig2)" stroke-width="4.7" stroke-linecap="round"/>
-        <path class="intro-orbit-tip" d="M52.6 52.2L59.2 58L51.8 56.1" fill="url(#ig2)"/>
-        <path class="intro-spark" d="M53.5 8.2V15.4M49.9 11.8H57.1" stroke="#67E8F9" stroke-width="1.35" stroke-linecap="round"/>
-        <circle class="intro-spark-dot" cx="53.5" cy="11.8" r="1.55" fill="#22D3EE"/>
-      </svg>
-    </div>
-    <div class="intro-wordmark">QYRO</div>
-    <div class="intro-sub">long podcasts <span>→</span> captioned vertical shorts</div>
+<div id="introOverlay" class="intro-overlay" role="dialog" aria-label="Qyro intro" aria-live="off">
+  <canvas class="intro-stage" aria-hidden="true"></canvas>
+  <div class="intro-grain" aria-hidden="true"></div>
+  <div class="intro-vignette" aria-hidden="true"></div>
+  <div class="intro-ident" aria-hidden="true">
+    <svg viewBox="0 0 64 64" class="intro-q" focusable="false">
+      <defs>
+        <linearGradient id="qspec" x1="10" y1="8" x2="56" y2="54" gradientUnits="userSpaceOnUse">
+          <stop offset="0%" stop-color="#FF3D5A"/>
+          <stop offset="22%" stop-color="#FF9A2E"/>
+          <stop offset="42%" stop-color="#FFE066"/>
+          <stop offset="60%" stop-color="#4ADE80"/>
+          <stop offset="80%" stop-color="#22D3EE"/>
+          <stop offset="100%" stop-color="#8B5CF6"/>
+        </linearGradient>
+        <linearGradient id="qhot" x1="32" y1="8" x2="32" y2="54" gradientUnits="userSpaceOnUse">
+          <stop offset="0%" stop-color="#FFFFFF"/>
+          <stop offset="55%" stop-color="#F3E8FF"/>
+          <stop offset="100%" stop-color="#A5F3FC"/>
+        </linearGradient>
+      </defs>
+      <g class="intro-q-mark">
+        <circle class="intro-q-halo" cx="32" cy="29" r="17.5" pathLength="1" fill="none" stroke="url(#qspec)" stroke-width="8.4" stroke-linecap="round"/>
+        <circle class="intro-q-ring" cx="32" cy="29" r="17.5" pathLength="1" fill="none" stroke="url(#qspec)" stroke-width="4.6" stroke-linecap="round"/>
+        <circle class="intro-q-core" cx="32" cy="29" r="6.4" fill="url(#qhot)"/>
+        <path class="intro-q-tail" d="M40.6 38.4L53.4 54.6" pathLength="1" fill="none" stroke="url(#qhot)" stroke-width="4.6" stroke-linecap="round"/>
+        <path class="intro-q-tail intro-q-tail-halo" d="M40.6 38.4L53.4 54.6" pathLength="1" fill="none" stroke="url(#qspec)" stroke-width="9.2" stroke-linecap="round"/>
+      </g>
+    </svg>
+  </div>
+  <div class="intro-lockup">
+    <div class="intro-wordmark" aria-label="Qyro"><span>Q</span><span>Y</span><span>R</span><span>O</span></div>
+    <div class="intro-sub">long podcasts <span>&rarr;</span> captioned vertical shorts</div>
     <div class="intro-rule" aria-hidden="true"></div>
+  </div>
+  <button class="intro-skip" type="button">Skip</button>
+  <div class="intro-hint" role="status">
+    <svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M4 9.5h3l4.2-3.4v11.8L7 14.5H4z"/>
+      <path d="M15.5 9a4.2 4.2 0 0 1 0 6M18 6.5a7.6 7.6 0 0 1 0 11"/>
+    </svg>
+    <span>Tap anywhere to hear the ident</span>
   </div>
 </div>
 <div class="glow" aria-hidden="true"></div>
@@ -98,6 +84,8 @@
     <button id="processAll" class="btn ghost" title="Queue every new or failed episode"><span class="ic" data-icon="wand"></span>Process all</button>
     <button id="searchBtn" class="btn ghost iconpad" title="Search downloaded transcripts"><span class="ic" data-icon="search"></span></button>
     <button id="toolsBtn" class="btn ghost iconpad" title="Audio beds, title lab, quality"><span class="ic" data-icon="music"></span></button>
+    <button id="identBtn" class="btn ghost iconpad" title="Replay the intro ident with sound"
+            aria-label="Replay the intro ident"><span class="ic" data-icon="sparkle"></span></button>
     <button id="settingsBtn" class="btn ghost iconpad" title="Free AI engine and defaults"><span class="ic" data-icon="sliders"></span></button>
     <button id="dashBtn" class="btn ghost iconpad" title="Storage, jobs, backup"><span class="ic" data-icon="grid"></span></button>
   </div>
@@ -171,6 +159,7 @@
 <div id="modalRoot" class="modal-root" hidden></div>
 <div id="toastRoot" class="toast-root"></div>
 
+<script src="/static/intro.js"></script>
 <script src="/static/app.js"></script>
 </body>
 </html>

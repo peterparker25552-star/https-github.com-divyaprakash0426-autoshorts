@@ -16,6 +16,43 @@ playlist URL ──▶ yt-dlp ──▶ transcripts ──▶ highlight engine �
                  captions)                     questions · energy)   burned-in captions)
 ```
 
+## What's new in v0.6.3 — the spectrum ident (and the ta-dum now actually plays)
+
+- **A glowing Q that expands into a spectrum.** The v6.2 ribbon reveal is replaced by a
+  black stage on which a white-hot Q traces itself, charges, and bursts outward into a
+  full rainbow of vertical light beams (red → violet across the screen) that rise from a
+  floor line with mirrors, bloom and dust. The wordmark and tagline land underneath.
+- **The beams dance to the sound.** The master bus is tapped by an `AnalyserNode`; each
+  bar's height is driven by its own FFT band while the ident is audible, and falls back
+  to a synthetic equaliser when it is not. Nothing is pre-baked: the whole thing is
+  computed per frame on a single `<canvas>` (DPR clamped to 2, three additive passes per
+  beam, no animated blur), so it stays smooth on a mid-range phone.
+- **The sound was broken, now it is not.** v6.2 scheduled its cue from a `pointerdown`
+  listener that the overlay's own click handler cancelled a moment later, so the tap that
+  existed to satisfy the autoplay policy also muted the intro. `web/intro.js` now treats
+  the first gesture as *unlock only* (it can never skip), and if audio is still blocked
+  when the timeline reaches the gate it **holds the frame for up to 0.9 s**, so the
+  ta-dum lands on the burst instead of drifting past it. If nothing unlocks in time the
+  ident simply finishes — the app is never stuck behind it.
+- **A real ta-dum, not two beeps.** Sharp noise snap + tom for the *ta*, a 162→44 Hz
+  body with a 41 Hz sub for the *dum*, a filtered riser into the burst, one pentatonic
+  pluck per beam panned left-to-right as the spectrum fires, sparkle air over the beams,
+  and a resolving chord under the wordmark — all through a compressor and a procedurally
+  generated 2.6 s stereo reverb impulse. No audio asset ships with the app.
+- **You get controls.** A *Replay the ident* button in the header (`QyroIdent.replay()`),
+  an **ident sound on/off** switch in Settings (remembered in `localStorage`), a
+  **Tap anywhere to hear the ident** hint while the browser waits for a gesture, a real
+  **Skip** button plus `Esc`, and the existing `?intro=1` preview switch.
+- **Upgrade-safe.** The service-worker shell cache is renamed to `qyro-v0.6.3-spectrum-shell`
+  and `web/intro.js` is added to the precached assets, so an installed PWA cannot keep
+  serving the silent v6.2 intro. A CSS fail-safe also hides the stage by itself if
+  `intro.js` never loads.
+- **Tested headlessly.** `tests/ident_harness.js` runs the real module against a stubbed
+  DOM and WebAudio and asserts, across 11 scenarios, that cues are scheduled, that a
+  refused `resume()` produces silence *and* a self-dismissing ident, that the unlock tap
+  keeps the 0.36 s ta→dum spacing, and that beams are actually painted. `tests/test_units_v063.py`
+  wraps it.
+
 ## What's new in v0.6.2 — a cinematic Qyro identity
 
 - **Original orbit logo.** A soft six-petal form, open Q-shaped orbit, curved cyan tail and cross-spark replace the old star/play mark. The same vector geometry is used by the header, intro, favicon and regenerated PWA icons.

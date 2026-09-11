@@ -11,6 +11,12 @@ fonts/animations/languages, transitions, the quality gate, option validation)
 and ``test_http_v060`` (the new API surface plus a real render that measures
 where the subject lands with tracking on and off).
 
+v0.6.3 added ``test_units_v063`` (the spectrum ident: its timeline, the
+autoplay-unlock dance and the CSS/markup contract) which runs
+``tests/ident_harness.js`` — a headless node harness that drives web/intro.js
+against a stubbed DOM and WebAudio and asserts the ta-dum is really scheduled
+in step with the beams.
+
 Usage:  python -m tests.run_all   (or python tests/run_all.py from the repo)
 """
 from __future__ import annotations
@@ -43,9 +49,10 @@ def main() -> int:
     step("node --check (web UI)")
     node = shutil.which("node")
     if node:
-        for script in ("app.js", "sw.js"):
+        for script in ("web/app.js", "web/intro.js", "web/sw.js",
+                       "tests/ident_harness.js"):
             proc = subprocess.run(
-                [node, "--check", str(REPO_ROOT / "web" / script)],
+                [node, "--check", str(REPO_ROOT / script)],
                 capture_output=True, text=True,
             )
             print(f"node --check {script}:", "OK" if proc.returncode == 0 else proc.stderr)
@@ -65,6 +72,7 @@ def main() -> int:
         "tests.test_units_v060",
         "tests.test_units_v061",
         "tests.test_http_v060",
+        "tests.test_units_v063",
     ):
         suite.addTests(loader.loadTestsFromName(module))
     runner = unittest.TextTestRunner(verbosity=1)
