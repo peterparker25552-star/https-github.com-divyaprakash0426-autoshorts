@@ -45,7 +45,7 @@ cp ~/start-autoshorts.sh ~/bin/autoshorts 2>/dev/null || true
 
 echo
 echo "============================================================"
-echo "  ✅ Qyro v0.6.0 is installed!"
+echo "  ✅ Qyro v0.6.1 is installed!"
 echo
 echo "  TO START IT (any time):"
 echo "     open Termux and type:  bash ~/start-autoshorts.sh"

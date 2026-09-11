@@ -16,6 +16,49 @@ playlist URL ──▶ yt-dlp ──▶ transcripts ──▶ highlight engine �
                  captions)                     questions · energy)   burned-in captions)
 ```
 
+## What's new in v0.6.1 — the camera follows the *speaker*
+
+- **Speaker-aware tracking.** v0.6.0 followed *a* person: the biggest face in
+  frame (which jumps whenever someone leans closer to the camera) or the middle
+  of the skin+motion blob (which frames nobody in a two-person shot). The
+  tracker now answers "who is talking?" entirely offline: the ffmpeg heat pass
+  emits separate skin and motion maps, connected components on the skin map
+  find up to three distinct people, one `ebur128` pass over the clip's own
+  audio yields voice-active/idle flags, and each candidate is scored by the
+  motion it makes *while the voice is active* — the speaker's head and hands
+  move on their words, a listener sits still. The camera follows the winner and
+  hands over (a smooth pan, never a snap) when the other person clearly takes
+  the turn; with no speech in the audio it follows whoever is most persistently
+  in frame. The optional OpenCV Haar backend now feeds its *face detections*
+  through the same speaker scoring instead of blindly picking the biggest face
+  per frame. On a synthetic two-person clip where the turn changes at 12 s, the
+  tracked camera sits at x=0.20 through the first speaker's turn and glides to
+  x=0.66 within 0.4 s of the hand-off (`switches: 1`, confidence 0.94).
+- **"AI unavailable during render" fixed at the root.** The two free-tier
+  defaults had been retired upstream — Groq shut down `llama-3.1-8b-instant`
+  on 2026-08-16 and Google deprecated the 2.0 Flash family on 2026-06-01 — so
+  every polished-metadata call failed with a 404 and fell back. The defaults
+  now point at the providers' current free models (`openai/gpt-oss-20b`,
+  `gemini-2.5-flash`); the Gemini payload pins `thinkingBudget: 0` so
+  2.5-class models cannot spend the whole output budget thinking and reply
+  empty; transient failures (timeouts, 429/5xx) are retried once; the
+  render-path polish budget rose from a hard-coded 12 s to the full 25 s; and
+  when the engine really cannot answer, the notice now says *why* ("HTTP 404
+  …", "needs an API key") instead of a generic "unavailable".
+- **Shorts end where the speaker stops.** Cuts no longer stop the instant the
+  score window stops (the "unfinished line" failure): a window that ends
+  mid-flow is scored down, and its end is extended to the next natural stop —
+  terminal punctuation, a real pause in the transcript, or the end of the
+  source — within a 3 s slack. Every cut also gets a breath of air after the
+  last spoken word (up to 0.9 s, placed inside the following silence), and
+  beat-synced or manual boundaries that land mid-word are repaired: forward to
+  finish the word, or back to the previous pause when the rest of the line is
+  too long.
+- **Longer shorts.** Default clip length is now 25–90 s (was 20–60 s) — the
+  highlight engine's duration sweet spot scales with the budget — with UI
+  presets Short · 25–40s, Medium · 40–65s, Long · 60–90s, Any · 25–90s.
+  YouTube Shorts accepts up to 3 minutes, so there is headroom.
+
 ## What's new in v0.6.0 — the camera follows the person
 
 - **Subject tracking instead of a static crop.** The old behaviour cropped the
@@ -218,7 +261,7 @@ If YouTube still reports a 429, wait **10–15 minutes** before retrying. Avoid 
 ## How the highlight engine works (no API keys needed)
 
 1. Captions are fetched one language at a time and split into sentence-like utterances.
-2. The transcript is scanned with sliding **sentence-aligned windows** (20–60 s by default). Each window is scored with the selected Viral, Story, Facts, or Energy weight profile using signals that correlate with engaging short-form moments:
+2. The transcript is scanned with sliding **sentence-aligned windows** (25–90 s by default). Each window is scored with the selected Viral, Story, Facts, or Energy weight profile using signals that correlate with engaging short-form moments:
    - **hook phrases** — "the truth is", "nobody tells you", "sach bataun", …
    - **hard numbers / stats** — `40 crore`, `100 million`, percentages
    - **curiosity questions** — direct questions to the guest

@@ -220,6 +220,13 @@ class Sentence:
     end: float
     text: str
     words: list[str] = field(default_factory=list)
+    # v0.6.1 — ending signals. ``terminal`` is True when the utterance ends
+    # with sentence punctuation; ``pause_after`` is the silence between this
+    # utterance's last word and the next caption line (None when unknown).
+    # The highlight engine uses them to make shorts stop where the *speaker*
+    # stops instead of wherever a scored window happens to stop.
+    terminal: bool = False
+    pause_after: float | None = None
 
     @property
     def duration(self) -> float:
@@ -234,14 +241,22 @@ _TERMINALS = re.compile(r"[.!?…][\"')\]]*$")
 _MAX_SENTENCE_WORDS = 40
 
 
-def to_sentences(segments: Iterable[Segment], max_gap: float = 1.8) -> list[Sentence]:
-    """Merge caption segments into sentence-like utterances."""
+def to_sentences(segments: Iterable[Segment], max_gap: float = 1.2) -> list[Sentence]:
+    """Merge caption segments into sentence-like utterances.
+
+    Utterances break on punctuation, on a pause longer than ``max_gap`` or at
+    40 words — whichever comes first. Each utterance records whether it ended
+    with punctuation (``terminal``) and how much silence followed it
+    (``pause_after``), so cuts can land on natural stops.
+    """
+    segments = [s for s in segments if s.text.strip()]
     sentences: list[Sentence] = []
     buf_text: list[str] = []
-    buf_start = buf_end = None
+    buf_start: float | None = None
+    buf_end = None
     buf_words = 0
 
-    def flush():
+    def flush(terminal: bool = False, pause_after: float | None = None):
         nonlocal buf_text, buf_start, buf_end, buf_words
         if buf_text and buf_start is not None:
             text = _clean(" ".join(buf_text))
@@ -252,26 +267,38 @@ def to_sentences(segments: Iterable[Segment], max_gap: float = 1.8) -> list[Sent
                         max(buf_end, buf_start + 0.6),
                         text,
                         text.split(),
+                        terminal=terminal,
+                        pause_after=pause_after,
                     )
                 )
         buf_text, buf_start, buf_end, buf_words = [], None, None, 0
 
-    for seg in segments:
+    for index, seg in enumerate(segments):
         text = seg.text.strip()
         if not text:
             continue
         if buf_start is None:
             buf_start = seg.start
-        # gap too large -> new utterance
+        # gap too large -> new utterance; the silence belongs to the *previous*
+        # utterance, so it is recorded on it before the buffer resets
         if buf_end is not None and seg.start - buf_end > max_gap:
-            flush()
+            gap = max(0.0, seg.start - buf_end)
+            flush(pause_after=gap)
             buf_start = seg.start
         buf_text.append(text)
         buf_end = max(buf_end or seg.end, seg.end)
         buf_words += len(text.split())
         joined = " ".join(buf_text)
         if _TERMINALS.search(joined.strip()) or buf_words >= _MAX_SENTENCE_WORDS:
-            flush()
+            # how much silence follows the last word? peek at the next caption
+            # line — overlapping auto-caption lines simply yield a small gap
+            pause = None
+            if index + 1 < len(segments):
+                pause = max(0.0, float(segments[index + 1].start) - float(buf_end))
+            flush(
+                terminal=bool(_TERMINALS.search(joined.strip())),
+                pause_after=pause,
+            )
     flush()
     return sentences
 
