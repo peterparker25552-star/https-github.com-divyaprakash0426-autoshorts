@@ -187,12 +187,19 @@ It opens at <http://localhost:8000> — keep the black window open while using i
 1. Install [Termux from F-Droid](https://f-droid.org/packages/com.termux/) (the Play Store build is outdated — don't use it)
 2. Easiest — paste this one line into Termux and wait:
 
+> **Use the repository URL below exactly.** This Qyro build is published at
+> `peterparker25552-star/https-github.com-divyaprakash0426-autoshorts`. The
+> separate `divyaprakash0426/autoshorts` repository does not contain
+> `android-install.sh`, so its raw URL returns a 404.
+
 ```bash
-pkg update -y ; pkg install -y curl ; curl -sSL https://raw.githubusercontent.com/peterparker25552-star/https-github.com-divyaprakash0426-autoshorts/main/android-install.sh | bash
+pkg update -y && pkg install -y curl && curl -fsSL https://raw.githubusercontent.com/peterparker25552-star/https-github.com-divyaprakash0426-autoshorts/main/android-install.sh -o "$HOME/autoshorts-android-install.sh" && bash "$HOME/autoshorts-android-install.sh"
 ```
 
-It installs everything, then start the app any time with
-`bash ~/start-autoshorts.sh`.
+The download uses `curl --fail` and saves the file before running it. If the
+URL is ever wrong, it stops with a curl error instead of passing GitHub's
+`404: Not Found` response to Bash. It installs everything, then start the app
+any time with `bash ~/start-autoshorts.sh`.
 
 Or do it by hand:
 

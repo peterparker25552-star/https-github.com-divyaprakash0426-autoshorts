@@ -64,12 +64,18 @@ Android will pop up a permission request — tap **Allow**.
 Copy this **single line**, paste it into Termux (long-press → **Paste**), and
 press Enter:
 
+> **Important:** use the repository URL below exactly. The separate
+> `divyaprakash0426/autoshorts` repository does not contain this Android
+> installer. A raw URL for that repository returns GitHub's `404: Not Found`
+> text, which Bash then tries to execute.
+
 ```
-pkg update -y ; pkg install -y curl ; curl -sSL https://raw.githubusercontent.com/peterparker25552-star/https-github.com-divyaprakash0426-autoshorts/main/android-install.sh | bash
+pkg update -y && pkg install -y curl && curl -fsSL https://raw.githubusercontent.com/peterparker25552-star/https-github.com-divyaprakash0426-autoshorts/main/android-install.sh -o "$HOME/autoshorts-android-install.sh" && bash "$HOME/autoshorts-android-install.sh"
 ```
 
-It will ask `Do you want to continue? [Y/n]` a few times — just press **Enter**
-each time (the default is yes).
+The `-f` option makes curl stop on HTTP errors, and the `&&` chain prevents
+Bash from running a failed download. It will ask `Do you want to continue?
+[Y/n]` a few times — just press **Enter** each time (the default is yes).
 
 This downloads Python, ffmpeg (the video engine), git, then Qyro itself, then
 the Hindi caption font. It takes **5–15 minutes** depending on your connection.
