@@ -3,7 +3,7 @@
 #   Qyro — ONE-CLICK installer for Android/Termux
 #
 #   Paste this single line into Termux:
-#   pkg update -y ; pkg install -y curl ; curl -sSL https://raw.githubusercontent.com/peterparker25552-star/https-github.com-divyaprakash0426-autoshorts/main/android-install.sh | bash
+#   pkg update -y ; pkg install -y curl ; curl -fsSL https://raw.githubusercontent.com/peterparker25552-star/https-github.com-divyaprakash0426-autoshorts/main/android-install.sh | bash
 # ============================================================
 set -e
 

@@ -188,7 +188,7 @@ It opens at <http://localhost:8000> — keep the black window open while using i
 2. Easiest — paste this one line into Termux and wait:
 
 ```bash
-pkg update -y ; pkg install -y curl ; curl -sSL https://raw.githubusercontent.com/peterparker25552-star/https-github.com-divyaprakash0426-autoshorts/main/android-install.sh | bash
+pkg update -y ; pkg install -y curl ; curl -fsSL https://raw.githubusercontent.com/peterparker25552-star/https-github.com-divyaprakash0426-autoshorts/main/android-install.sh | bash
 ```
 
 It installs everything, then start the app any time with

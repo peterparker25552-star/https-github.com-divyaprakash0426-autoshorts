@@ -65,7 +65,7 @@ Copy this **single line**, paste it into Termux (long-press → **Paste**), and
 press Enter:
 
 ```
-pkg update -y ; pkg install -y curl ; curl -sSL https://raw.githubusercontent.com/peterparker25552-star/https-github.com-divyaprakash0426-autoshorts/main/android-install.sh | bash
+pkg update -y ; pkg install -y curl ; curl -fsSL https://raw.githubusercontent.com/peterparker25552-star/https-github.com-divyaprakash0426-autoshorts/main/android-install.sh | bash
 ```
 
 It will ask `Do you want to continue? [Y/n]` a few times — just press **Enter**
@@ -201,6 +201,16 @@ stops the render.
 ---
 
 ## Troubleshooting
+
+**`bash: line 1: 404:: command not found` (or `curl: (22) ... 404`)**
+You used the wrong download address — most often
+`.../divyaprakash0426/autoshorts/main/...`, which does not contain this file
+(that is a different project). Copy the Step 3 line exactly as written, with
+`peterparker25552-star/https-github.com-divyaprakash0426-autoshorts` in the
+address:
+```
+pkg update -y ; pkg install -y curl ; curl -fsSL https://raw.githubusercontent.com/peterparker25552-star/https-github.com-divyaprakash0426-autoshorts/main/android-install.sh | bash
+```
 
 **"This must run inside Termux on Android."**
 You ran an install script outside Termux (for example in a file manager). Open
