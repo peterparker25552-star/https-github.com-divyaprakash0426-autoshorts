@@ -85,7 +85,7 @@ When it finishes you will see:
 
 ```
 ============================================================
-  ✅ Qyro v0.6.2 is installed!
+  ✅ Qyro v0.6.3 is installed!
 
   TO START IT (any time):
      open Termux and type:  bash ~/start-autoshorts.sh

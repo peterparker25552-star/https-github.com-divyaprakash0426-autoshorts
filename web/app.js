@@ -1983,6 +1983,8 @@ async function openSettings() {
       <label>Quality <select id="setQuality">${chosen(QUALITY_OPTIONS, baseDefaults.quality)}</select></label>
       <label>Caption brand <select id="setBrand">${chosen(BRAND_OPTIONS, baseDefaults.captions_brand)}</select></label>
       <label class="full"><span class="hint" id="qualHint"></span></label>
+      <label class="toggle" title="Play the synthesised ta-dum when the ident runs">${ic("music")}<input type="checkbox" id="setIdentSound"> ident sound on</label>
+      <label class="full"><span class="hint">The intro ident is a local effect: the glowing Q, the spectrum beams and the ta-dum are all generated in the browser by <code>web/intro.js</code>, so nothing is fetched and nothing is stored off this device. Turning the sound off is remembered in this browser.</span></label>
     </div>
     <div class="cutbar">
       <button class="btn primary small" id="setSave">${ic("check")} Save settings</button>
@@ -1996,6 +1998,11 @@ async function openSettings() {
   };
   document.querySelector("#setQuality").addEventListener("change", sync);
   sync();
+  const identSound = document.querySelector("#setIdentSound");
+  if (identSound) {
+    identSound.checked = !window.QyroIdent || window.QyroIdent.soundEnabled();
+    identSound.addEventListener("change", (event) => setIdentSound(event.target.checked));
+  }
   document.querySelector("#setSave").addEventListener("click", async (event) => {
     const btn = event.currentTarget;
     const body = {
@@ -2103,190 +2110,37 @@ document.addEventListener("keydown", (event) => {
   if (event.key === "Escape") closeModal();
 });
 
-let introAudioContext = null;
-let introMasterGain = null;
-let introAudioStarted = false;
-let introAudioCancelled = false;
-let introVisualStartedAt = 0;
-
-function introTone(ctx, destination, elapsed, startAt, duration, options = {}) {
-  const from = Math.max(1, Number(options.from || 220));
-  const to = Math.max(1, Number(options.to || from));
-  const endAt = startAt + duration;
-  if (elapsed >= endAt) return;
-
-  const passed = Math.max(0, elapsed - startAt);
-  const left = Math.max(0.08, duration - passed);
-  const delay = Math.max(0, startAt - elapsed);
-  const now = ctx.currentTime + delay;
-  const progress = Math.min(1, passed / duration);
-  const current = from * Math.pow(to / from, progress);
-  const attack = Math.min(Number(options.attack || 0.035), left * 0.3);
-  const release = Math.min(Number(options.release || 0.55), left * 0.72);
-  const peak = Math.max(0.0001, Number(options.peak || 0.1));
-  const osc = ctx.createOscillator();
-  const gain = ctx.createGain();
-
-  osc.type = options.type || "sine";
-  osc.frequency.setValueAtTime(current, now);
-  if (left > 0.1) osc.frequency.exponentialRampToValueAtTime(to, now + left);
-  if (options.detune) osc.detune.setValueAtTime(Number(options.detune), now);
-
-  gain.gain.setValueAtTime(0.0001, now);
-  gain.gain.exponentialRampToValueAtTime(peak, now + attack);
-  if (left > attack + release) {
-    gain.gain.setValueAtTime(peak, now + left - release);
-  }
-  gain.gain.exponentialRampToValueAtTime(0.0001, now + left);
-  osc.connect(gain).connect(destination);
-  osc.start(now);
-  osc.stop(now + left + 0.06);
-}
-
-function introWhoosh(ctx, destination, elapsed) {
-  const startAt = 0.02;
-  const duration = 2.85;
-  if (elapsed >= startAt + duration) return;
-  const passed = Math.max(0, elapsed - startAt);
-  const left = Math.max(0.08, duration - passed);
-  const delay = Math.max(0, startAt - elapsed);
-  const now = ctx.currentTime + delay;
-  const length = Math.ceil(ctx.sampleRate * (left + 0.08));
-  const buffer = ctx.createBuffer(1, length, ctx.sampleRate);
-  const data = buffer.getChannelData(0);
-  for (let i = 0; i < data.length; i += 1) {
-    // A gently falling noise bed makes the ribbon sweep audible without a
-    // harsh click or a repeating loop.
-    data[i] = (Math.random() * 2 - 1) * (1 - i / data.length);
-  }
-  const source = ctx.createBufferSource();
-  const filter = ctx.createBiquadFilter();
-  const gain = ctx.createGain();
-  source.buffer = buffer;
-  filter.type = "lowpass";
-  filter.frequency.setValueAtTime(620, now);
-  filter.frequency.exponentialRampToValueAtTime(2600, now + left * 0.72);
-  filter.frequency.exponentialRampToValueAtTime(420, now + left);
-  gain.gain.setValueAtTime(0.0001, now);
-  gain.gain.exponentialRampToValueAtTime(0.12, now + Math.min(0.28, left * 0.24));
-  gain.gain.exponentialRampToValueAtTime(0.0001, now + left);
-  source.connect(filter).connect(gain).connect(destination);
-  source.start(now);
-  source.stop(now + left + 0.06);
-}
-
-function scheduleIntroSound(ctx, elapsed) {
-  const compressor = ctx.createDynamicsCompressor();
-  const master = ctx.createGain();
-  const now = ctx.currentTime;
-  const left = Math.max(0.5, 5.55 - elapsed);
-  compressor.threshold.setValueAtTime(-18, now);
-  compressor.knee.setValueAtTime(18, now);
-  compressor.ratio.setValueAtTime(5, now);
-  compressor.attack.setValueAtTime(0.006, now);
-  compressor.release.setValueAtTime(0.42, now);
-  master.gain.setValueAtTime(0.0001, now);
-  master.gain.linearRampToValueAtTime(0.72, now + 0.075);
-  master.gain.setValueAtTime(0.72, now + Math.min(0.9, left * 0.25));
-  master.gain.exponentialRampToValueAtTime(0.0001, now + left);
-  master.connect(compressor).connect(ctx.destination);
-  introMasterGain = master;
-
-  introWhoosh(ctx, master, elapsed);
-  // The two-note hit is deliberately followed by a long, quiet resonance.
-  // That tail is what was missing from the previous 2-second sound.
-  introTone(ctx, master, elapsed, 0.34, 0.78, {
-    type: "sine", from: 310, to: 520, peak: 0.11, release: 0.28,
-  });
-  introTone(ctx, master, elapsed, 0.56, 0.62, {
-    type: "triangle", from: 215, to: 145, peak: 0.23, release: 0.3,
-  });
-  introTone(ctx, master, elapsed, 0.84, 4.38, {
-    type: "sine", from: 86, to: 39, peak: 0.58, attack: 0.04, release: 1.55,
-  });
-  introTone(ctx, master, elapsed, 0.92, 3.96, {
-    type: "triangle", from: 172, to: 78, peak: 0.19, attack: 0.08, release: 1.25,
-  });
-  introTone(ctx, master, elapsed, 1.03, 3.44, {
-    type: "sine", from: 258, to: 128, peak: 0.105, attack: 0.11, release: 1.1,
-  });
-  introTone(ctx, master, elapsed, 2.22, 2.35, {
-    type: "sine", from: 880, to: 660, peak: 0.06, attack: 0.12, release: 0.8,
-  });
-  introTone(ctx, master, elapsed, 3.16, 1.78, {
-    type: "triangle", from: 440, to: 220, peak: 0.035, attack: 0.12, release: 0.75,
-  });
-}
-
-function playIntroSound() {
-  const AudioCtor = window.AudioContext || window.webkitAudioContext;
-  if (!AudioCtor) return;
-  if (!introAudioContext) {
-    try { introAudioContext = new AudioCtor(); } catch (error) { return; }
-  }
-  const ctx = introAudioContext;
-  const start = () => {
-    if (introAudioCancelled || introAudioStarted || ctx.state !== "running") return;
-    introAudioStarted = true;
-    const elapsed = introVisualStartedAt
-      ? Math.max(0, Math.min(5.2, (performance.now() - introVisualStartedAt) / 1000))
-      : 0;
-    scheduleIntroSound(ctx, elapsed);
-  };
-  // On Android the first call can be suspended by autoplay policy. The next
-  // pointer/keyboard event calls this function again and resumes the same
-  // context; it never creates a second overlapping ta-dum.
-  if (ctx.state === "suspended") {
-    ctx.resume().then(start).catch(() => {});
-  } else {
-    start();
-  }
-}
-
-function fadeIntroSound() {
-  if (!introMasterGain || !introAudioContext) return;
-  const now = introAudioContext.currentTime;
-  introMasterGain.gain.cancelScheduledValues(now);
-  introMasterGain.gain.setTargetAtTime(0.0001, now, 0.16);
+/* --------------------------------------------------------------------- *
+ * The v6.3 "spectrum" ident.
+ *
+ * web/intro.js owns the timeline, the canvas beams and the synthesised
+ * ta-dum; app.js only decides when to run it and wires the two controls
+ * the UI offers: replay the ident, and switch its sound off permanently.
+ * Keeping the gate here means the overlay still hides itself (CSS
+ * fail-safe) if the ident script never loads.
+ * --------------------------------------------------------------------- */
+function identAvailable() {
+  return !!window.QyroIdent;
 }
 
 function initIntro() {
-  const overlay = document.getElementById("introOverlay");
-  if (!overlay) return;
-  let seen = false;
-  try { seen = sessionStorage.getItem("qyro.introSeen") === "1"; } catch (error) {}
-  const replay = new URLSearchParams(window.location.search).get("intro") === "1";
-  if (seen && !replay) {
-    overlay.classList.add("dismissed");
+  if (!identAvailable()) return;
+  window.QyroIdent.boot();
+}
+
+function replayIntro() {
+  if (!identAvailable()) {
+    toast("Ident unavailable - reload the page (web/intro.js did not load).", true);
     return;
   }
+  window.QyroIdent.replay();
+}
 
-  introVisualStartedAt = performance.now();
-  const reduced = !!window.matchMedia
-    && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
-  const duration = reduced ? 900 : 5600;
-  let dismissed = false;
-  const dismiss = (skipped = false) => {
-    if (dismissed) return;
-    dismissed = true;
-    if (skipped) {
-      introAudioCancelled = true;
-      fadeIntroSound();
-    }
-    overlay.classList.add("dismissed");
-    try { sessionStorage.setItem("qyro.introSeen", "1"); } catch (error) {}
-    window.setTimeout(() => overlay.remove(), reduced ? 80 : 1000);
-  };
-
-  const unlock = () => playIntroSound();
-  document.addEventListener("pointerdown", unlock, { once: true, passive: true });
-  document.addEventListener("keydown", unlock, { once: true });
-  overlay.addEventListener("click", () => dismiss(true));
-  window.setTimeout(() => dismiss(false), duration);
-
-  // Try immediately on browsers that allow audio. On mobile this is safely
-  // rejected until the first gesture, then the same context is resumed.
-  playIntroSound();
+function setIdentSound(on) {
+  if (!identAvailable()) return;
+  window.QyroIdent.setSoundEnabled(!!on);
+  const btn = document.getElementById("identBtn");
+  if (btn) btn.classList.toggle("muted", !on);
 }
 
 window.addEventListener("DOMContentLoaded", async () => {
@@ -2309,6 +2163,8 @@ window.addEventListener("DOMContentLoaded", async () => {
   $("#zipBtn").addEventListener("click", downloadZip);
   $("#toolsBtn").addEventListener("click", openTools);
   $("#settingsBtn").addEventListener("click", openSettings);
+  $("#identBtn").addEventListener("click", replayIntro);
+  setIdentSound(!window.QyroIdent || window.QyroIdent.soundEnabled());
   initIntro();
   hydrateIcons();
   if ("serviceWorker" in navigator && location.protocol.startsWith("http")) {
