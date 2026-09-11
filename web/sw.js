@@ -5,7 +5,9 @@
  * shell is kept so an installed icon opened with the server stopped shows a
  * real page instead of a browser error. Versioned cache name = clean upgrade.
  */
-const SHELL = "qyro-v0.6.0-shell";
+// Bump this whenever the shell assets change so an installed PWA cannot keep
+// the previous intro/logo in its offline cache.
+const SHELL = "qyro-v0.6.2-cinematic-shell";
 const ASSETS = ["/", "/static/app.js", "/static/style.css", "/static/manifest.webmanifest",
                 "/static/icons/favicon.svg", "/static/icons/icon-192.png",
                 "/static/icons/icon-512.png"];

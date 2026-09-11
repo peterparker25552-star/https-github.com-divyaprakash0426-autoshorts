@@ -228,34 +228,44 @@ function fmtBytes(bytes) {
 }
 
 // ------------------------------------------------------------------ brand
-/* Qyro v6.2 mark — Claude-inspired soft 6-point star (organic, friendly)
-   + Grok-inspired sharp play tail, violet->cyan gradient matching the UI.
-   One geometry, inlined so the header needs zero image requests. */
+/* Qyro v6.3 mark — an original six-petal orbit flower with a curved Q tail.
+   It takes a soft, friendly AI-era geometry as inspiration without copying an
+   existing mark. One geometry is inlined so the header needs zero requests. */
 const LOGO_SVG = `
 <svg viewBox="0 0 64 64" role="img" aria-label="Qyro" focusable="false">
   <defs>
     <linearGradient id="qg" x1="8" y1="6" x2="56" y2="58" gradientUnits="userSpaceOnUse">
       <stop offset="0%" stop-color="#7C3AED"/>
-      <stop offset="0.52" stop-color="#A855F7"/>
-      <stop offset="1%" stop-color="#22D3EE"/>
+      <stop offset="0.48" stop-color="#C084FC"/>
+      <stop offset="1" stop-color="#22D3EE"/>
     </linearGradient>
-    <linearGradient id="qg2" x1="34" y1="38" x2="58" y2="62" gradientUnits="userSpaceOnUse">
-      <stop offset="0%" stop-color="#A855F7"/>
-      <stop offset="1%" stop-color="#22D3EE"/>
+    <linearGradient id="qg2" x1="36" y1="38" x2="58" y2="58" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#C084FC"/>
+      <stop offset="1" stop-color="#22D3EE"/>
     </linearGradient>
-    <mask id="qcut">
+    <path id="qpetal" d="M32 30.5C26.8 27.1 24.8 18.4 29.1 8.9C30.2 6.4 33.8 6.4 34.9 8.9C39.2 18.4 37.2 27.1 32 30.5Z"/>
+    <mask id="qcut" maskUnits="userSpaceOnUse">
       <rect width="64" height="64" fill="#fff"/>
-      <path d="M30.5 32.5 L62.5 46.8 L34.2 68.5 Z" fill="#000"/>
+      <path d="M36 33C47 36 58 45 68 57L59 68L38 49Z" fill="#000"/>
+      <circle cx="32" cy="32" r="7.2" fill="#000"/>
     </mask>
   </defs>
   <rect width="64" height="64" rx="14" fill="#0A0A0F"/>
   <g mask="url(#qcut)">
-    <path fill="url(#qg)" d="M 25.69 11.98 Q 28.00 8.00 30.31 11.98 L 31.19 13.49 Q 33.50 17.47 38.10 17.48 L 39.85 17.49 Q 44.45 17.50 42.16 21.49 L 41.29 23.01 Q 39.00 27.00 41.29 30.99 L 42.16 32.51 Q 44.45 36.50 39.85 36.51 L 38.10 36.52 Q 33.50 36.53 31.19 40.51 L 30.31 42.02 Q 28.00 46.00 25.69 42.02 L 24.81 40.51 Q 22.50 36.53 17.90 36.52 L 16.15 36.51 Q 11.55 36.50 13.84 32.51 L 14.71 30.99 Q 17.00 27.00 14.71 23.01 L 13.84 21.49 Q 11.55 17.50 16.15 17.49 L 17.90 17.48 Q 22.50 17.47 24.81 13.49 Z"/>
-    <circle cx="28" cy="27" r="10.2" fill="#0A0A0F"/>
+    <g class="q-petals" fill="url(#qg)">
+      <use href="#qpetal" transform="rotate(0 32 32)"/>
+      <use href="#qpetal" transform="rotate(60 32 32)"/>
+      <use href="#qpetal" transform="rotate(120 32 32)"/>
+      <use href="#qpetal" transform="rotate(180 32 32)"/>
+      <use href="#qpetal" transform="rotate(240 32 32)"/>
+      <use href="#qpetal" transform="rotate(300 32 32)"/>
+    </g>
   </g>
-  <path d="M35.2 38.8 L57.2 51.0 L35.2 63.2 Z" fill="url(#qg2)"/>
-  <path d="M47 12.6 L47.85 14.55 L49.8 15.4 L47.85 16.25 L47 18.2 L46.15 16.25 L44.2 15.4 L46.15 14.55 Z" fill="#22D3EE" opacity="0.95"/>
-</svg>`;
+  <path d="M38 39C44 42 50 48 57 57" fill="none" stroke="url(#qg2)" stroke-width="4.7" stroke-linecap="round"/>
+  <path d="M52.6 52.2L59.2 58L51.8 56.1" fill="url(#qg2)"/>
+  <path d="M53.5 8.2V15.4M49.9 11.8H57.1" stroke="#67E8F9" stroke-width="1.35" stroke-linecap="round"/>
+  <circle cx="53.5" cy="11.8" r="1.55" fill="#22D3EE"/>
+</svg>`
 
 /* Icon set: every glyph in the UI is inline SVG — no emoji, no font, no
    network. 24x24, stroke uses currentColor so icons inherit button text. */
@@ -2093,81 +2103,189 @@ document.addEventListener("keydown", (event) => {
   if (event.key === "Escape") closeModal();
 });
 
+let introAudioContext = null;
+let introMasterGain = null;
+let introAudioStarted = false;
+let introAudioCancelled = false;
+let introVisualStartedAt = 0;
+
+function introTone(ctx, destination, elapsed, startAt, duration, options = {}) {
+  const from = Math.max(1, Number(options.from || 220));
+  const to = Math.max(1, Number(options.to || from));
+  const endAt = startAt + duration;
+  if (elapsed >= endAt) return;
+
+  const passed = Math.max(0, elapsed - startAt);
+  const left = Math.max(0.08, duration - passed);
+  const delay = Math.max(0, startAt - elapsed);
+  const now = ctx.currentTime + delay;
+  const progress = Math.min(1, passed / duration);
+  const current = from * Math.pow(to / from, progress);
+  const attack = Math.min(Number(options.attack || 0.035), left * 0.3);
+  const release = Math.min(Number(options.release || 0.55), left * 0.72);
+  const peak = Math.max(0.0001, Number(options.peak || 0.1));
+  const osc = ctx.createOscillator();
+  const gain = ctx.createGain();
+
+  osc.type = options.type || "sine";
+  osc.frequency.setValueAtTime(current, now);
+  if (left > 0.1) osc.frequency.exponentialRampToValueAtTime(to, now + left);
+  if (options.detune) osc.detune.setValueAtTime(Number(options.detune), now);
+
+  gain.gain.setValueAtTime(0.0001, now);
+  gain.gain.exponentialRampToValueAtTime(peak, now + attack);
+  if (left > attack + release) {
+    gain.gain.setValueAtTime(peak, now + left - release);
+  }
+  gain.gain.exponentialRampToValueAtTime(0.0001, now + left);
+  osc.connect(gain).connect(destination);
+  osc.start(now);
+  osc.stop(now + left + 0.06);
+}
+
+function introWhoosh(ctx, destination, elapsed) {
+  const startAt = 0.02;
+  const duration = 2.85;
+  if (elapsed >= startAt + duration) return;
+  const passed = Math.max(0, elapsed - startAt);
+  const left = Math.max(0.08, duration - passed);
+  const delay = Math.max(0, startAt - elapsed);
+  const now = ctx.currentTime + delay;
+  const length = Math.ceil(ctx.sampleRate * (left + 0.08));
+  const buffer = ctx.createBuffer(1, length, ctx.sampleRate);
+  const data = buffer.getChannelData(0);
+  for (let i = 0; i < data.length; i += 1) {
+    // A gently falling noise bed makes the ribbon sweep audible without a
+    // harsh click or a repeating loop.
+    data[i] = (Math.random() * 2 - 1) * (1 - i / data.length);
+  }
+  const source = ctx.createBufferSource();
+  const filter = ctx.createBiquadFilter();
+  const gain = ctx.createGain();
+  source.buffer = buffer;
+  filter.type = "lowpass";
+  filter.frequency.setValueAtTime(620, now);
+  filter.frequency.exponentialRampToValueAtTime(2600, now + left * 0.72);
+  filter.frequency.exponentialRampToValueAtTime(420, now + left);
+  gain.gain.setValueAtTime(0.0001, now);
+  gain.gain.exponentialRampToValueAtTime(0.12, now + Math.min(0.28, left * 0.24));
+  gain.gain.exponentialRampToValueAtTime(0.0001, now + left);
+  source.connect(filter).connect(gain).connect(destination);
+  source.start(now);
+  source.stop(now + left + 0.06);
+}
+
+function scheduleIntroSound(ctx, elapsed) {
+  const compressor = ctx.createDynamicsCompressor();
+  const master = ctx.createGain();
+  const now = ctx.currentTime;
+  const left = Math.max(0.5, 5.55 - elapsed);
+  compressor.threshold.setValueAtTime(-18, now);
+  compressor.knee.setValueAtTime(18, now);
+  compressor.ratio.setValueAtTime(5, now);
+  compressor.attack.setValueAtTime(0.006, now);
+  compressor.release.setValueAtTime(0.42, now);
+  master.gain.setValueAtTime(0.0001, now);
+  master.gain.linearRampToValueAtTime(0.72, now + 0.075);
+  master.gain.setValueAtTime(0.72, now + Math.min(0.9, left * 0.25));
+  master.gain.exponentialRampToValueAtTime(0.0001, now + left);
+  master.connect(compressor).connect(ctx.destination);
+  introMasterGain = master;
+
+  introWhoosh(ctx, master, elapsed);
+  // The two-note hit is deliberately followed by a long, quiet resonance.
+  // That tail is what was missing from the previous 2-second sound.
+  introTone(ctx, master, elapsed, 0.34, 0.78, {
+    type: "sine", from: 310, to: 520, peak: 0.11, release: 0.28,
+  });
+  introTone(ctx, master, elapsed, 0.56, 0.62, {
+    type: "triangle", from: 215, to: 145, peak: 0.23, release: 0.3,
+  });
+  introTone(ctx, master, elapsed, 0.84, 4.38, {
+    type: "sine", from: 86, to: 39, peak: 0.58, attack: 0.04, release: 1.55,
+  });
+  introTone(ctx, master, elapsed, 0.92, 3.96, {
+    type: "triangle", from: 172, to: 78, peak: 0.19, attack: 0.08, release: 1.25,
+  });
+  introTone(ctx, master, elapsed, 1.03, 3.44, {
+    type: "sine", from: 258, to: 128, peak: 0.105, attack: 0.11, release: 1.1,
+  });
+  introTone(ctx, master, elapsed, 2.22, 2.35, {
+    type: "sine", from: 880, to: 660, peak: 0.06, attack: 0.12, release: 0.8,
+  });
+  introTone(ctx, master, elapsed, 3.16, 1.78, {
+    type: "triangle", from: 440, to: 220, peak: 0.035, attack: 0.12, release: 0.75,
+  });
+}
+
 function playIntroSound() {
-  try {
-    const ctx = new (window.AudioContext || window.webkitAudioContext)();
-    const now = ctx.currentTime;
-    // Netflix ta-dum: low hit + brass swell
-    const master = ctx.createGain();
-    master.gain.setValueAtTime(0.0, now);
-    master.gain.linearRampToValueAtTime(0.85, now + 0.06);
-    master.gain.exponentialRampToValueAtTime(0.001, now + 2.2);
-    master.connect(ctx.destination);
-    // low boom
-    const o1 = ctx.createOscillator();
-    o1.type = "sine";
-    o1.frequency.setValueAtTime(110, now);
-    o1.frequency.exponentialRampToValueAtTime(52, now + 0.45);
-    const g1 = ctx.createGain();
-    g1.gain.setValueAtTime(0.9, now);
-    g1.gain.exponentialRampToValueAtTime(0.001, now + 1.1);
-    o1.connect(g1).connect(master);
-    o1.start(now); o1.stop(now + 1.2);
-    // mid
-    const o2 = ctx.createOscillator();
-    o2.type = "triangle";
-    o2.frequency.setValueAtTime(220, now);
-    o2.frequency.linearRampToValueAtTime(165, now + 0.7);
-    const g2 = ctx.createGain();
-    g2.gain.setValueAtTime(0.0, now);
-    g2.gain.linearRampToValueAtTime(0.35, now + 0.12);
-    g2.gain.exponentialRampToValueAtTime(0.001, now + 1.6);
-    o2.connect(g2).connect(master);
-    o2.start(now+0.05); o2.stop(now+1.7);
-    // high shimmer
-    const o3 = ctx.createOscillator();
-    o3.type = "sine";
-    o3.frequency.setValueAtTime(880, now);
-    o3.frequency.exponentialRampToValueAtTime(660, now + 1.2);
-    const g3 = ctx.createGain();
-    g3.gain.setValueAtTime(0.0, now);
-    g3.gain.linearRampToValueAtTime(0.18, now + 0.25);
-    g3.gain.exponentialRampToValueAtTime(0.001, now + 2.0);
-    o3.connect(g3).connect(master);
-    o3.start(now+0.15); o3.stop(now+2.1);
-  } catch(e) {}
+  const AudioCtor = window.AudioContext || window.webkitAudioContext;
+  if (!AudioCtor) return;
+  if (!introAudioContext) {
+    try { introAudioContext = new AudioCtor(); } catch (error) { return; }
+  }
+  const ctx = introAudioContext;
+  const start = () => {
+    if (introAudioCancelled || introAudioStarted || ctx.state !== "running") return;
+    introAudioStarted = true;
+    const elapsed = introVisualStartedAt
+      ? Math.max(0, Math.min(5.2, (performance.now() - introVisualStartedAt) / 1000))
+      : 0;
+    scheduleIntroSound(ctx, elapsed);
+  };
+  // On Android the first call can be suspended by autoplay policy. The next
+  // pointer/keyboard event calls this function again and resumes the same
+  // context; it never creates a second overlapping ta-dum.
+  if (ctx.state === "suspended") {
+    ctx.resume().then(start).catch(() => {});
+  } else {
+    start();
+  }
+}
+
+function fadeIntroSound() {
+  if (!introMasterGain || !introAudioContext) return;
+  const now = introAudioContext.currentTime;
+  introMasterGain.gain.cancelScheduledValues(now);
+  introMasterGain.gain.setTargetAtTime(0.0001, now, 0.16);
 }
 
 function initIntro() {
   const overlay = document.getElementById("introOverlay");
   if (!overlay) return;
-  // show once per session (localStorage flag expires on browser close if sessionStorage used, but spec says once per session)
-  const seen = sessionStorage.getItem("qyro.introSeen");
+  let seen = false;
+  try { seen = sessionStorage.getItem("qyro.introSeen") === "1"; } catch (error) {}
   if (seen) {
     overlay.classList.add("dismissed");
     return;
   }
+
+  introVisualStartedAt = performance.now();
+  const reduced = !!window.matchMedia
+    && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+  const duration = reduced ? 900 : 5600;
   let dismissed = false;
-  const dismiss = () => {
+  const dismiss = (skipped = false) => {
     if (dismissed) return;
     dismissed = true;
+    if (skipped) {
+      introAudioCancelled = true;
+      fadeIntroSound();
+    }
     overlay.classList.add("dismissed");
-    sessionStorage.setItem("qyro.introSeen", "1");
-    setTimeout(() => overlay.remove(), 700);
+    try { sessionStorage.setItem("qyro.introSeen", "1"); } catch (error) {}
+    window.setTimeout(() => overlay.remove(), reduced ? 80 : 1000);
   };
-  overlay.addEventListener("click", () => { playIntroSound(); dismiss(); });
-  // auto-dismiss after 2.4s
-  setTimeout(dismiss, 2400);
-  // attempt sound on first interaction if allowed, else on click
-  const trySound = () => {
-    playIntroSound();
-    document.removeEventListener("click", trySound);
-    document.removeEventListener("keydown", trySound);
-  };
-  document.addEventListener("click", trySound, { once: true });
-  document.addEventListener("keydown", trySound, { once: true });
-  // also try immediately (may be blocked until interaction, but we try)
-  try { playIntroSound(); } catch(e) {}
+
+  const unlock = () => playIntroSound();
+  document.addEventListener("pointerdown", unlock, { once: true, passive: true });
+  document.addEventListener("keydown", unlock, { once: true });
+  overlay.addEventListener("click", () => dismiss(true));
+  window.setTimeout(() => dismiss(false), duration);
+
+  // Try immediately on browsers that allow audio. On mobile this is safely
+  // rejected until the first gesture, then the same context is resumed.
+  playIntroSound();
 }
 
 window.addEventListener("DOMContentLoaded", async () => {
