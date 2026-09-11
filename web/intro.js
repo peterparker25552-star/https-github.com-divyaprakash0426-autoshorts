@@ -142,7 +142,11 @@
       } catch (error) { analyser = null; }
 
       const verb = ctx.createConvolver();
-      verb.buffer = makeImpulse(ctx, 2.6, 3.1);
+      // 1.7 s (was 2.6): the tail past that sat under the wordmark chord where
+      // nobody could hear it, but real-time stereo convolution is the most
+      // expensive thing on the bus — on phones the long impulse could starve
+      // the audio thread and surface as intermittent crackle.
+      verb.buffer = makeImpulse(ctx, 1.7, 3.1);
       verbSend = ctx.createGain();
       verbSend.gain.value = 0.62;
       const verbOut = ctx.createGain();
@@ -172,11 +176,22 @@
 
     function shape(gain, at, peak, attack, dur, hold) {
       const g = gain.gain;
+      // Anti-click guards (the "random glitch/zap" fix):
+      //  • the resting value is pinned to silence — a GainNode defaults to
+      //    1.0, so if automation ever landed after the source started, the
+      //    first samples would play at full level and click;
+      //  • no event may be scheduled at or behind ctx.currentTime — a late
+      //    unlock or a stalled frame would otherwise clamp the attack ramp
+      //    to zero length, another click. Late cues start a beat later
+      //    (inaudible) instead of snapping (very audible).
+      g.value = 0.0001;
+      const shift = Math.max(0, (ctx.currentTime + 0.012) - at);
+      const t0 = at + shift;
       const top = Math.max(0.0002, peak);
-      const end = Math.max(at + attack + 0.02, at + dur);
-      g.setValueAtTime(0.0001, at);
-      g.exponentialRampToValueAtTime(top, at + Math.max(0.002, attack));
-      if (hold && hold < dur) g.setValueAtTime(top, at + hold);
+      const end = Math.max(t0 + attack + 0.02, at + dur + shift);
+      g.setValueAtTime(0.0001, t0);
+      g.exponentialRampToValueAtTime(top, t0 + Math.max(0.002, attack));
+      if (hold && hold < dur) g.setValueAtTime(top, t0 + hold);
       g.exponentialRampToValueAtTime(0.0001, end);
       return end;
     }
@@ -239,7 +254,11 @@
     const PENTA = [0, 2, 4, 7, 9, 12, 14, 16, 19, 21, 24, 26, 28];
 
     function score(elapsed) {
-      const now = ctx.currentTime + 0.02;
+      // 60 ms of lead room (was 20): every cue must be schedulable with its
+      // full attack intact even when the frame that starts the score lands
+      // late — an envelope whose ramp target is already "now" is what read
+      // as a random zap on slow devices.
+      const now = ctx.currentTime + 0.06;
       const play = (when, fn) => {
         if (when < elapsed - 0.01) return;
         fn(now + (when - elapsed));
@@ -248,6 +267,8 @@
       // 1. Charge — a low rumble gathers under the closing ring.
       play(T.charge, (a) => {
         const dur = T.ta - T.charge + 0.5;
+        // no reverb send: pure sub-bass gains nothing from the hall and every
+        // send is a full convolution tap (see the impulse note in build()).
         tone(a, dur, { type: "sine", from: 34, to: 58, peak: 0.2, attack: 0.35, hold: dur * 0.5 });
         noiseHit(a, dur, { type: "lowpass", from: 130, to: 520, peak: 0.1, attack: 0.3, q: 0.7 });
       });
@@ -272,11 +293,12 @@
       // 4. DUM — the big one: body, sub, and a chest-thumping noise layer.
       play(T.dum, (a) => {
         tone(a, 1.2, { type: "sine", from: 162, to: 44, peak: 0.82, attack: 0.004, verb: true });
+        // the pure 41 Hz sub skips the hall: reverb on sub-bass is inaudible
+        // and it doubles the convolution load at the loudest moment.
         tone(a, 2.2, { type: "sine", from: 41, to: 36, peak: 0.52, attack: 0.02, hold: 0.5 });
         noiseHit(a, 0.32, { type: "lowpass", from: 420, to: 150, peak: 0.42, attack: 0.004, verb: true });
         tone(a, 0.5, { type: "triangle", from: 320, to: 120, peak: 0.15, attack: 0.004, verb: true });
       });
-
       // 5. The spectrum — every beam plucks one note as it fires, panned to
       //    its place on screen and rising through a pentatonic run.
       const notes = PENTA.length;
@@ -381,6 +403,7 @@
       },
       dispose() {
         const dying = ctx;
+        const master = out;
         ctx = null;
         out = null;
         verbSend = null;
@@ -389,9 +412,23 @@
         noise = null;
         started = false;
         halted = false;
-        if (dying && dying.close) {
-          try { dying.close(); } catch (error) {}
+        if (!dying) return;
+        // Never hard-close a context that is still making sound: cutting the
+        // graph mid-sample is an audible click (the "glitch" on instant
+        // replays). Fade the master bus over ~30 ms, then close on silence.
+        if (master && dying.state === "running") {
+          try {
+            const now = dying.currentTime;
+            master.gain.cancelScheduledValues(now);
+            master.gain.setValueAtTime(Math.max(0.0001, master.gain.value), now);
+            master.gain.exponentialRampToValueAtTime(0.0001, now + 0.03);
+            window.setTimeout(() => {
+              try { dying.close(); } catch (error) { /* already closed */ }
+            }, 40);
+            return;
+          } catch (error) { /* fall through to a plain close */ }
         }
+        try { dying.close(); } catch (error) { /* already closed */ }
       },
     };
   }
@@ -875,7 +912,7 @@
 
   window.QyroIdent = {
     T,
-    version: "6.3-spectrum",
+    version: "6.5-spectrum",
     isPlaying() { return !!state && !state.done; },
     soundEnabled() {
       if (sound) return sound.enabled();

@@ -31,7 +31,17 @@ v0.6.4 "ion": a new logo — a chrome crescent Q lit by an electric-blue rim
 glow, crossed by a blade tail, wrapped in a thin orbit with a four-point spark
 — and the whole UI retuned to match it. Violet/cyan gives way to ion blue
 #1E5BFF, ice chrome #9FC9FF and deep space black #01030B across every surface,
-button, glow and focus ring. Colour only: no behaviour changed."""
+button, glow and focus ring. Colour only: no behaviour changed.
 
-__version__ = "0.6.4"
+v0.6.5: the search bar no longer draws its icon over the placeholder (the
+shared control rule was winning the padding fight), Google's new "AQ." auth
+keys work end to end (validator, 422 on wrong-field pastes, automatic rescue
+of a Google key pasted into the OpenAI-compatible box, gemini-3.6-flash as
+the free-tier default with the Gemini 3 thinkingLevel payload), and the intro
+ident's random glitch is gone — envelopes can no longer be scheduled behind
+the audio clock, the reverb impulse got cheaper, and a replay fades the old
+context out instead of closing it mid-sample.
+"""
+
+__version__ = "0.6.5"
 APP_NAME = "Qyro"

@@ -16,6 +16,36 @@ playlist URL ──▶ yt-dlp ──▶ transcripts ──▶ highlight engine �
                  captions)                     questions · energy)   burned-in captions)
 ```
 
+## What's new in v0.6.5 — the search bar, the AQ. keys, and a clean ta-dum
+
+- **The search bars are fixed.** The icon and the placeholder ("Search") were drawn
+  on top of each other: the shared control rule `input[type="search"] { padding: 9px 11px }`
+  appears *after* `.inputwrap input { padding-left: 34px }` in `style.css` at equal
+  specificity, so every prefix-icon input silently lost its left padding. A
+  higher-specificity rule (`.inputwrap input[type]`) gives the icon its lane back in
+  the episode list, the shorts grid and the playlist field.
+- **Google's new "AQ." API keys work.** AI Studio now issues *authentication keys*
+  starting `AQ.` instead of the legacy `AIza` traffic keys, and they are rejected on
+  OpenAI-compatible Bearer routes. Qyro already called Google's own endpoint with
+  `x-goog-api-key` — the one route the new keys accept — so v0.6.5 completes the
+  story: the settings API validates the key shape and answers `422` with a readable
+  hint when a Groq/OpenAI key is pasted into the Google box, a Google key pasted into
+  the *OpenAI-compatible* box is automatically re-routed to the Google provider, and
+  the free-tier default model is now `gemini-3.6-flash` (Gemini 3 models dropped
+  `thinkingBudget`, so the payload switches to `thinkingLevel: "low"` while 2.5-class
+  models keep the zero budget).
+- **The intro glitch is gone.** The random zap/crackle in the ident had three causes,
+  all fixed in `web/intro.js`: cue envelopes could be scheduled at or behind the audio
+  clock (a late unlock or a stalled frame clamped the attack to zero length and the
+  oscillator clicked — gains are now pinned to silence and late cues shift a beat
+  instead), the 2.6 s convolution impulse could starve the audio thread on phones
+  (trimmed to 1.7 s, and pure sub-bass cues skip the reverb send entirely), and
+  instant replays hard-`close()`d a context that was still making sound (now the old
+  context fades over 30 ms and closes on silence). The harness gained lead-room
+  assertions so a click can never ship silently again.
+- 442 tests pass (`python -m tests.run_all`), including 25 new ones in
+  `tests/test_units_v065.py`.
+
 ## What's new in v0.6.4 — the ion logo, and a UI built around it
 
 - **A new mark.** The six-petal flower is replaced by the **chrome "ion Q"**: a thick

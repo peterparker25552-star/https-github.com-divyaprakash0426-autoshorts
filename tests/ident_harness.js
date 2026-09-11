@@ -487,7 +487,13 @@ expect(results.desktop.classes.lockupIn && results.desktop.classes.lockupTag,
 expect(results.desktop.cues > 30, `desktop: only ${results.desktop.cues} cues scheduled`);
 expect(results.desktop.tones > 25, "desktop: too few pitched voices");
 expect(results.desktop.noiseLayers >= 4, "desktop: no noise layers (whoosh/snap/air)");
-expect(results.desktop.impulseSeconds >= 2, "desktop: no reverb impulse generated");
+expect(results.desktop.impulseSeconds >= 1.2, "desktop: no reverb impulse generated");
+// v0.6.5 anti-glitch: every cue must be schedulable strictly ahead of the
+// audio clock — an envelope whose attack lands "now" is an audible click.
+expect(results.desktop.firstCueRel === null || results.desktop.firstCueRel >= 0.05,
+       `desktop: a cue was scheduled with no lead room (${results.desktop.firstCueRel}s)`);
+expect(results.unlock.firstCueRel === null || results.unlock.firstCueRel >= 0.05,
+       `unlock: resumed score scheduled too tight (${results.unlock.firstCueRel}s)`);
 expect(results.desktop.fftReads > 0, "desktop: beams are not driven by the analyser");
 expect(results.desktop.taAt !== null && results.desktop.dumAt !== null,
        "desktop: the TA or the DUM was never scheduled");

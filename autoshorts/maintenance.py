@@ -421,6 +421,10 @@ def settings_update_from(body: dict) -> dict:
         value = value.strip()
         if len(value) > 400:
             raise ServiceError(422, f"{key} is too long")
+        if key == "gemini_key" and value and not config.is_gemini_key(value):
+            # v0.6.5: fail fast on a wrong-field paste (a Groq gsk_…, an OpenAI
+            # sk-…, a truncated copy) instead of "AI unavailable" at render time.
+            raise ServiceError(422, f"{key}: {config.GEMINI_KEY_HINT}")
         update[key] = value          # "" clears a key; it is never echoed back
     if "autopilot" in body:
         if not isinstance(body["autopilot"], bool):

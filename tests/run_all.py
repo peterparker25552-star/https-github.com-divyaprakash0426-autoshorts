@@ -73,6 +73,7 @@ def main() -> int:
         "tests.test_units_v061",
         "tests.test_http_v060",
         "tests.test_units_v063",
+        "tests.test_units_v065",
     ):
         suite.addTests(loader.loadTestsFromName(module))
     runner = unittest.TextTestRunner(verbosity=1)

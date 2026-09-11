@@ -7,13 +7,14 @@ user audio tracks, the silence tuner and the free AI engine chain.
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import subprocess
 from pathlib import Path
 
 # --- Brand -----------------------------------------------------------------
 APP_NAME = "Qyro"
-APP_VERSION = "0.6.4"
+APP_VERSION = "0.6.5"
 APP_TAGLINE = "long podcasts → captioned vertical shorts"
 BRAND_CREDIT = "Made with Qyro"
 
@@ -225,9 +226,35 @@ DEFAULT_AI_PROVIDER = "offline"
 GEMINI_BASE_URL = "https://generativelanguage.googleapis.com/v1beta"
 GROQ_BASE_URL = "https://api.groq.com/openai/v1"
 GROQ_MODEL = "openai/gpt-oss-20b"
-GEMINI_MODEL = "gemini-2.5-flash"
+# v0.6.5 — the Gemini free tier default moved to the Gemini 3.6 Flash GA model
+# (the 2.5 default kept working but is the previous generation).
+GEMINI_MODEL = "gemini-3.6-flash"
 CUSTOM_MODEL = "gpt-4o-mini"
 AI_TIMEOUT = 25
+
+# --- v0.6.5 Google "AQ." auth keys ------------------------------------------
+# Google AI Studio now issues "Authentication keys" that start with ``AQ.``
+# instead of the legacy traffic keys that start with ``AIza``. Two facts drive
+# the code below:
+#   1. AQ. keys work on Google's own endpoint (generativelanguage.googleapis.com)
+#      when passed as ``x-goog-api-key`` — which is exactly how engine.py calls
+#      it — but are rejected (HTTP 400/401) on OpenAI-compatible routes, so a
+#      Gemini key must never be routed through the ``custom`` provider.
+#   2. The settings API validates the shape so a pasted wrong-field value (a
+#      Groq ``gsk_…``, an OpenAI ``sk-…``, a truncated copy) fails fast with a
+#      readable message instead of surfacing later as "AI unavailable".
+GEMINI_KEY_PATTERN = re.compile(r"^(?:AQ\.?[\x21-\x7e]{10,}|AIza[A-Za-z0-9_\-]{10,})$")
+GEMINI_KEY_HINT = (
+    "Google AI Studio keys start with AQ. (new auth keys) or AIza (legacy) — "
+    "copy the whole key from aistudio.google.com/apikey"
+)
+
+
+def is_gemini_key(value: object) -> bool:
+    """True when ``value`` is shaped like a Google AI Studio key (AQ. or AIza)."""
+    text = str(value or "").strip()
+    return bool(text) and bool(GEMINI_KEY_PATTERN.match(text))
+
 # The render path used to hard-code a 12 s polish timeout, which turned a
 # cold-start provider call into "AI unavailable during render". Renders get
 # the full budget plus one automatic retry on transient errors.
