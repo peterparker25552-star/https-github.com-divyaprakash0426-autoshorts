@@ -317,7 +317,10 @@ class HarnessTests(unittest.TestCase):
         self.assertGreater(desktop["cues"], 30, "the score was not scheduled")
         self.assertGreaterEqual(desktop["tones"], 25)
         self.assertGreaterEqual(desktop["noiseLayers"], 4)
-        self.assertGreaterEqual(desktop["impulseSeconds"], 2.0)
+        # v0.6.5 shortened the impulse to 1.7 s: the tail past that was
+        # inaudible under the wordmark chord, but its convolution cost was the
+        # main crackle source on phones. Still a real hall, not a sliver.
+        self.assertGreaterEqual(desktop["impulseSeconds"], 1.2)
         # TA/DUM are read back off the stub as absolute ctx times
         self.assertAlmostEqual(desktop["dumAt"] - desktop["taAt"], t["dum"] - t["ta"], places=2)
         self.assertGreater(desktop["additivePasses"], 50, "beams not additively blended")

@@ -480,9 +480,10 @@ class EngineReliabilityTests(unittest.TestCase):
     def test_defaults_point_at_live_free_models(self):
         # Groq retired llama-3.1-8b-instant (2026-08-16) and Google deprecated
         # the 2.0 Flash family (2026-06-01); the old defaults made every call
-        # 404, which users saw as "AI unavailable during render".
+        # 404, which users saw as "AI unavailable during render". v0.6.5 moved
+        # Gemini to the current GA Flash generation.
         self.assertEqual(config.GROQ_MODEL, "openai/gpt-oss-20b")
-        self.assertEqual(config.GEMINI_MODEL, "gemini-2.5-flash")
+        self.assertEqual(config.GEMINI_MODEL, "gemini-3.6-flash")
 
     def test_gemini_payload_disables_thinking(self):
         # 2.5-class models spend the output budget on thinking tokens unless
@@ -500,9 +501,9 @@ class EngineReliabilityTests(unittest.TestCase):
 
 class VersionAndDefaultsTests(unittest.TestCase):
     def test_version_bumped(self):
-        # 0.6.4 owns the file, but the floor this suite defends must still hold
+        # 0.6.5 owns the file, but the floor this suite defends must still hold
         self.assertGreaterEqual(config.APP_VERSION, "0.6.2")
-        self.assertEqual(config.APP_VERSION, "0.6.4")
+        self.assertEqual(config.APP_VERSION, "0.6.5")
 
     def test_shorts_got_longer(self):
         self.assertEqual(config.MIN_CLIP_SECONDS, 25)

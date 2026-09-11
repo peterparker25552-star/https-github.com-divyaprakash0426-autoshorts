@@ -1991,9 +1991,10 @@ async function openSettings() {
     <div class="stepmsg">Qyro writes titles offline and needs no account. If you add a free key, titles, hashtags and the upload pack get an AI rewrite — and any failure quietly falls back to offline text.</div>
     <div class="advgrid" style="margin-top:10px">
       <label class="full">Provider <select id="setProvider">${chosen(PROVIDER_OPTIONS, eng.provider || "offline")}</select></label>
-      <label>Model <input id="setModel" type="text" maxlength="120" placeholder="gemini-2.0-flash / llama-3.3-70b" value="${esc(eng.model || "")}"></label>
+      <label>Model <input id="setModel" type="text" maxlength="120" placeholder="gemini-3.6-flash / llama-3.3-70b" value="${esc(eng.model || "")}"></label>
       <label>Base URL (custom only) <input id="setBase" type="text" maxlength="300" placeholder="http://127.0.0.1:11434/v1" value="${esc(eng.base_url || "")}"></label>
-      <label>Google AI Studio key <input id="setGemini" type="password" maxlength="400" placeholder="${s.gemini_key_set ? "saved \u2014 type to replace" : "AIza\u2026"}" autocomplete="off"></label>
+      <label>Google AI Studio key <input id="setGemini" type="password" maxlength="400" placeholder="${s.gemini_key_set ? "saved \u2014 type to replace" : "AQ\u2026 or AIza\u2026"}" autocomplete="off"></label>
+      <label class="full"><span class="hint">New Google keys start with <code>AQ.</code> (older ones with <code>AIza</code>) — both work: Qyro calls Google's own endpoint, the only route the new keys accept. Leave Model empty to follow the free-tier default.</span></label>
       <label>Groq key <input id="setGroq" type="password" maxlength="400" placeholder="${s.groq_key_set ? "saved \u2014 type to replace" : "gsk_\u2026"}" autocomplete="off"></label>
       <label>OpenAI-compatible key <input id="setAi" type="password" maxlength="400" placeholder="${s.ai_key_set ? "saved \u2014 type to replace" : "optional"}" autocomplete="off"></label>
     </div>

@@ -157,10 +157,17 @@ ic:empty { display: none; }
 .inputwrap .prefix {
   position: absolute;
   left: 12px;
+  top: 50%;
+  transform: translateY(-50%);
   color: var(--dim);
   pointer-events: none;
 }
-.inputwrap input { padding-left: 34px; }
+/* Two selectors on purpose: the later `input[type=…]` control rule below sets
+   `padding: 9px 11px` at equal specificity, which used to win and slide the
+   placeholder under the prefix icon (the "search over Search" overlap). The
+   attribute selector outranks it so the icon always keeps its lane. */
+.inputwrap input,
+.inputwrap input[type] { padding-left: 34px; }
 .searchwrap { flex: 1 1 180px; max-width: 320px; }
 
 .health {

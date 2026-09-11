@@ -66,6 +66,15 @@ def read(settings: dict | None) -> dict:
         "groq": str(settings.get("groq_key") or "").strip(),
         "custom": str(settings.get("ai_key") or env["ai_key"]).strip(),
     }
+    # v0.6.5 — Google's new "AQ." auth keys cannot authenticate on any
+    # OpenAI-compatible (Bearer) route — they come back 400/401 there — so a
+    # Google key pasted into the OpenAI-compatible box could only ever fail.
+    # When the Google box is empty, hand the key to the provider that works.
+    # (Legacy AIza keys stay put: Google's own OpenAI shim still takes them.)
+    if (keys["custom"].startswith("AQ") and not keys["gemini"]
+            and config.is_gemini_key(keys["custom"])):
+        keys["gemini"] = keys["custom"]
+        keys["custom"] = ""
     base_url = str(settings.get("ai_base_url") or env["ai_base_url"]).strip()
     if not base_url and keys["custom"]:
         base_url = config.LLM_BASE_URL
@@ -90,6 +99,10 @@ def chain(cfg: dict) -> list[str]:
         return []
     if provider == "auto":
         return [name for name in ("gemini", "groq", "custom") if key_for(cfg, name)]
+    if provider == "custom" and not key_for(cfg, "custom") and key_for(cfg, "gemini"):
+        # An AQ. key was pasted into the OpenAI-compatible box and read() moved
+        # it to the Google provider — follow it instead of dying on an empty key.
+        return ["gemini"]
     return [provider]
 
 
@@ -140,6 +153,25 @@ def _scrub(text: str) -> str:
     for match in re.findall(r"[A-Za-z0-9_\-]{20,}", cleaned):
         cleaned = cleaned.replace(match, "[redacted]")
     return cleaned[:300]
+
+
+def _model_major(model: str) -> int:
+    """Leading version number of a Gemini model id (``gemini-3.6-flash`` → 3)."""
+    match = re.search(r"gemini-(\d+)", str(model or ""))
+    return int(match.group(1)) if match else 0
+
+
+def _gemini_thinking(model: str) -> dict:
+    """The right thinking control for a Gemini model id.
+
+    2.5-class models "think" by default; left on, the thinking tokens eat the
+    whole output budget and the reply arrives empty — pin ``thinkingBudget: 0``.
+    Gemini 3 models dropped that field in favour of ``thinkingLevel``, so 3.x
+    gets ``low``: these tasks are JSON rewrites, not reasoning problems.
+    """
+    if _model_major(model) >= 3:
+        return {"thinkingConfig": {"thinkingLevel": "low"}}
+    return {"thinkingConfig": {"thinkingBudget": 0}}
 
 
 _TRANSIENT_HTTP = (429, 500, 502, 503, 504)
@@ -262,12 +294,12 @@ def ask_json(system: str, user: str, settings: dict | None,
                 "generationConfig": {
                     "temperature": 0.85,
                     "maxOutputTokens": 2048,
-                    # 2.5-class models "think" by default; left on, the thinking
-                    # tokens eat the whole output budget and the reply arrives
-                    # empty. These tasks don't need thinking — switch it off.
-                    "thinkingConfig": {"thinkingBudget": 0},
+                    **_gemini_thinking(model),
                 },
             }
+            # x-goog-api-key (not Bearer): it is what Google's own endpoint
+            # speaks, and the only header the new AQ. auth keys work with —
+            # on OpenAI-compatible Bearer routes they come back 400/401.
             headers = {"x-goog-api-key": key}
         else:
             if name == "groq":
