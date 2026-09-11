@@ -45,9 +45,13 @@ chmod +x ~/start-autoshorts.sh
 mkdir -p ~/bin
 cp ~/start-autoshorts.sh ~/bin/autoshorts 2>/dev/null || true
 
+# Read the version from the checkout instead of maintaining a second,
+# easy-to-stale version string in this installer.
+APP_VERSION="$(python -c 'from autoshorts import __version__; print(__version__)' 2>/dev/null || printf '%s' 'unknown')"
+
 echo
 echo "============================================================"
-echo "  ✅ Qyro v0.6.1 is installed!"
+echo "  ✅ Qyro v${APP_VERSION} is installed!"
 echo
 echo "  TO START IT (any time):"
 echo "     open Termux and type:  bash ~/start-autoshorts.sh"
