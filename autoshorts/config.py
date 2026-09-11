@@ -13,7 +13,7 @@ from pathlib import Path
 
 # --- Brand -----------------------------------------------------------------
 APP_NAME = "Qyro"
-APP_VERSION = "0.6.1"
+APP_VERSION = "0.6.2"
 APP_TAGLINE = "long podcasts → captioned vertical shorts"
 BRAND_CREDIT = "Made with Qyro"
 
@@ -102,6 +102,8 @@ CAPTION_STYLES = ("classic", "pop", "minimal")
 CAPTION_POSITIONS = ("standard", "low")
 DEFAULT_CAPTIONS_POS = "standard"
 DEFAULT_CAPTIONS_BOX = False
+# v6.2 — captions on/off toggle (user asked for a switch)
+DEFAULT_CAPTIONS_ENABLED = True
 
 SPEED_RANGE = (0.5, 2.0)        # inclusive; atempo stays clean inside this
 DEFAULT_SPEED = 1.0

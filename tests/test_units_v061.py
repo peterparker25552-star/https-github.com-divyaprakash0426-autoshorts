@@ -500,7 +500,7 @@ class EngineReliabilityTests(unittest.TestCase):
 
 class VersionAndDefaultsTests(unittest.TestCase):
     def test_version_bumped(self):
-        self.assertEqual(config.APP_VERSION, "0.6.1")
+        self.assertEqual(config.APP_VERSION, "0.6.2")
 
     def test_shorts_got_longer(self):
         self.assertEqual(config.MIN_CLIP_SECONDS, 25)

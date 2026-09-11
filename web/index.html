@@ -18,6 +18,37 @@
 <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
+<div id="introOverlay" class="intro-overlay" aria-hidden="true">
+  <div class="intro-inner">
+    <div class="intro-logo-wrap">
+      <svg viewBox="0 0 64 64" class="intro-logo" aria-hidden="true" focusable="false">
+        <defs>
+          <linearGradient id="ig" x1="8" y1="6" x2="56" y2="58" gradientUnits="userSpaceOnUse">
+            <stop offset="0%" stop-color="#7C3AED"/>
+            <stop offset="0.52" stop-color="#A855F7"/>
+            <stop offset="1%" stop-color="#22D3EE"/>
+          </linearGradient>
+          <linearGradient id="ig2" x1="34" y1="38" x2="58" y2="62" gradientUnits="userSpaceOnUse">
+            <stop offset="0%" stop-color="#A855F7"/>
+            <stop offset="1%" stop-color="#22D3EE"/>
+          </linearGradient>
+          <mask id="icut"><rect width="64" height="64" fill="#fff"/><path d="M30.5 32.5 L62.5 46.8 L34.2 68.5 Z" fill="#000"/></mask>
+        </defs>
+        <rect width="64" height="64" rx="14" fill="#0A0A0F"/>
+        <g mask="url(#icut)">
+          <path class="intro-star" fill="url(#ig)" d="M 25.69 11.98 Q 28.00 8.00 30.31 11.98 L 31.19 13.49 Q 33.50 17.47 38.10 17.48 L 39.85 17.49 Q 44.45 17.50 42.16 21.49 L 41.29 23.01 Q 39.00 27.00 41.29 30.99 L 42.16 32.51 Q 44.45 36.50 39.85 36.51 L 38.10 36.52 Q 33.50 36.53 31.19 40.51 L 30.31 42.02 Q 28.00 46.00 25.69 42.02 L 24.81 40.51 Q 22.50 36.53 17.90 36.52 L 16.15 36.51 Q 11.55 36.50 13.84 32.51 L 14.71 30.99 Q 17.00 27.00 14.71 23.01 L 13.84 21.49 Q 11.55 17.50 16.15 17.49 L 17.90 17.48 Q 22.50 17.47 24.81 13.49 Z"/>
+          <circle cx="28" cy="27" r="10.2" fill="#0A0A0F"/>
+        </g>
+        <path class="intro-tail" d="M35.2 38.8 L57.2 51.0 L35.2 63.2 Z" fill="url(#ig2)"/>
+        <path class="intro-spark" d="M47 12.6 L47.85 14.55 L49.8 15.4 L47.85 16.25 L47 18.2 L46.15 16.25 L44.2 15.4 L46.15 14.55 Z" fill="#22D3EE"/>
+      </svg>
+      <div class="intro-shine"></div>
+    </div>
+    <div class="intro-text">QYRO</div>
+    <div class="intro-sub">long podcasts → captioned vertical shorts</div>
+    <div class="intro-line"></div>
+  </div>
+</div>
 <div class="glow" aria-hidden="true"></div>
 
 <header class="topbar">
