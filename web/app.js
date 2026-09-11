@@ -58,6 +58,47 @@ const AUDIO_MIX_OPTIONS = [
   ["replace", "replace audio"],
   ["duck", "duck voice under track"],
 ];
+// v0.6.0: the server publishes its own catalog on /api/health (it knows
+// which fonts are installed and whether the face model is available).
+// These lists are only the fallback before the first health reply lands.
+const FALLBACK_OPTIONS = {
+  fonts: [["auto", "best for the language"]],
+  anims: [["none", "none"], ["fade", "fade"], ["pop", "pop"],
+          ["zoom", "zoom"], ["bounce", "bounce"], ["glow", "glow"],
+          ["blurin", "blur in"], ["karaoke", "karaoke"], ["drop", "drop in"]],
+  transitions: [["none", "none"], ["fade", "fade"], ["dip", "dip to black"],
+                ["flash", "flash"], ["slide", "slide"]],
+  track_modes: [["auto", "track the person"], ["vision", "vision only"],
+                ["face", "face model"], ["off", "static crop"]],
+  track_zooms: [["auto", "auto"], ["tight", "tight"], ["normal", "normal"],
+                ["wide", "wide"]],
+  languages: [["auto", "detect"], ["en", "English"], ["hi", "Hindi"],
+              ["hinglish", "Hinglish"]],
+};
+
+// Fonts get a richer label than the other groups: the server knows which
+// family each choice resolves to on THIS machine, and a font that resolves
+// to nothing silently falls back. Say so up front instead of after a render.
+function fontCatalog() {
+  const items = (state.health?.options || {}).fonts;
+  if (!Array.isArray(items) || !items.length) return FALLBACK_OPTIONS.fonts;
+  return items.map((item) => {
+    if (item.id === "auto") return [item.id, item.label || "best for the language"];
+    if (item.installed === false) return [item.id, `${item.label} (not installed)`];
+    if (item.resolved) return [item.id, `${item.label} — ${item.resolved}`];
+    return [item.id, item.label || item.id];
+  });
+}
+
+// [[value, label], ...] for a catalog group, from the server when available.
+function catalog(group) {
+  if (group === "fonts") return fontCatalog();
+  const items = (state.health?.options || {})[group];
+  if (!Array.isArray(items) || !items.length) {
+    return FALLBACK_OPTIONS[group] || [];
+  }
+  return items.map((item) => [item.id, item.label || item.id]);
+}
 
 const SIGNAL_LABELS = {
   hook: "Hook",
@@ -107,6 +148,13 @@ let baseDefaults = {
   audio_mix: "duck",
   silence_noise: -35,
   silence_min: 0.5,
+  captions_font: "auto",
+  captions_anim: "fade",
+  transition: "fade",
+  track_mode: "auto",
+  track_zoom: "auto",
+  language: "auto",
+  quality_gate: true,
   logo_preset: "",
   logo_size: "M",
   logo_feather: 0,
@@ -313,6 +361,14 @@ function readCardOpts(card) {
     },
     silence_noise: +pick(".opt-silence-noise", -35),
     silence_min: +pick(".opt-silence-min", 0.5),
+    captions_font: pick(".opt-cap-font", baseDefaults.captions_font),
+    captions_anim: pick(".opt-cap-anim", baseDefaults.captions_anim),
+    transition: pick(".opt-transition", baseDefaults.transition),
+    track_mode: pick(".opt-track-mode", baseDefaults.track_mode),
+    track_zoom: pick(".opt-track-zoom", baseDefaults.track_zoom),
+    language: pick(".opt-language", baseDefaults.language),
+    quality_gate: !card.querySelector(".opt-quality-gate")
+      || card.querySelector(".opt-quality-gate").checked,
   };
 }
 
@@ -417,6 +473,39 @@ function renderManualBox(ep) {
   </div>`;
 }
 
+function captionLanguageNote(opts) {
+  const options = state.health?.options || {};
+  const hindiWanted = opts.language === "hi" || opts.language === "hinglish"
+    || opts.captions_font === "devanagari";
+  if (!hindiWanted || options.devanagari_ready !== false) return "";
+  return `<label class="full warn" title="No Devanagari font is installed yet">
+    ${ic("alert")} Hindi needs a Devanagari font — install one first
+    <button class="btn small" onclick="installFonts(this)">Install fonts</button>
+  </label>`;
+}
+
+async function installFonts(btn) {
+  const old = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = "Installing…";
+  try {
+    const body = await api("/api/fonts/install", { method: "POST" });
+    toast(body.ok ? `Fonts ready: ${body.installed}`
+                  : "Fonts unavailable offline", !body.ok);
+    await refreshHealth();
+    renderEpisodes();
+  } catch (err) {
+    toast(`Font install failed: ${err.message}`, true);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = old;
+  }
+}
+
+async function refreshHealth() {
+  try { state.health = await api("/api/health"); } catch (e) { /* keep old */ }
+}
+
 function renderAdvOpts(ep, opts) {
   const open = state.detailsOpen[`adv-${ep.id}`] ? " open" : "";
   return `<details class="advopts"${open}>
@@ -425,6 +514,14 @@ function renderAdvOpts(ep, opts) {
       <label>Captions <select class="opt-captions">${chosen(CAPTION_OPTIONS, opts.captions)}</select></label>
       <label>Cap position <select class="opt-cap-pos">${chosen(CAPTION_POS_OPTIONS, opts.captions_pos)}</select></label>
       <label class="toggle" title="Opaque box behind the words">${ic("box")}<input class="opt-cap-box" type="checkbox"${checkedAttr(opts.captions_box)}> caption box</label>
+      <label title="Follow the speaker instead of cropping the middle of a wide shot">Follow person <select class="opt-track-mode">${chosen(catalog("track_modes"), opts.track_mode)}</select></label>
+      <label title="How much headroom to leave around the person">Framing <select class="opt-track-zoom"${opts.track_mode === "off" ? " disabled" : ""}>${chosen(catalog("track_zooms"), opts.track_zoom)}</select></label>
+      <label>Caption font <select class="opt-cap-font">${chosen(catalog("fonts"), opts.captions_font)}</select></label>
+      <label>Caption motion <select class="opt-cap-anim">${chosen(catalog("anims"), opts.captions_anim)}</select></label>
+      <label>Clip transition <select class="opt-transition">${chosen(catalog("transitions"), opts.transition)}</select></label>
+      <label>Language <select class="opt-language">${chosen(catalog("languages"), opts.language)}</select></label>
+      <label class="toggle" title="Skip the thin, wordy, rambling windows and keep the tight ones">${ic("wave")}<input class="opt-quality-gate" type="checkbox"${opts.quality_gate === false ? "" : " checked"}> best parts only</label>
+      ${captionLanguageNote(opts)}
       <label>Format <select class="opt-format">${chosen(FORMAT_OPTIONS, opts.format)}</select></label>
       <label>Speed <input class="opt-speed" type="number" min="0.5" max="2" step="0.05" value="${Number(opts.speed) || 1}"></label>
       <label class="toggle"><input class="opt-progress" type="checkbox"${checkedAttr(opts.progress)}> progress bar</label>
@@ -943,11 +1040,17 @@ function rerenderClip(id) {
       <label class="toggle"><input id="rr-silence" type="checkbox"${checkedAttr(opts.silence)}> jump-cut silence</label>
       <label class="toggle"><input id="rr-loud" type="checkbox"${checkedAttr(opts.loud)}> loudness</label>
       <label>Title <input id="rr-title" type="text" maxlength="120" value="${esc(clip.title || "")}"></label>
-    </div>
       <label>Brand <select id="rr-brand">${chosen(BRAND_OPTIONS, opts.captions_brand || "none")}</select></label>
       <label>Music bed <select id="rr-track">${trackOptions(opts.audio_track)}</select></label>
       <label>Track mode <select id="rr-mix">${chosen(AUDIO_MIX_OPTIONS, opts.audio_mix || "duck")}</select></label>
       <label class="toggle"><input id="rr-beats" type="checkbox"${checkedAttr(opts.sync_beats)}> sync cuts to beats</label>
+      <label>Follow person <select id="rr-track-mode">${chosen(catalog("track_modes"), opts.track_mode || baseDefaults.track_mode)}</select></label>
+      <label>Framing <select id="rr-track-zoom">${chosen(catalog("track_zooms"), opts.track_zoom || baseDefaults.track_zoom)}</select></label>
+      <label>Caption font <select id="rr-cap-font">${chosen(catalog("fonts"), opts.captions_font || baseDefaults.captions_font)}</select></label>
+      <label>Caption motion <select id="rr-cap-anim">${chosen(catalog("anims"), opts.captions_anim || baseDefaults.captions_anim)}</select></label>
+      <label>Clip transition <select id="rr-transition">${chosen(catalog("transitions"), opts.transition || baseDefaults.transition)}</select></label>
+      <label>Language <select id="rr-language">${chosen(catalog("languages"), opts.language || baseDefaults.language)}</select></label>
+      <label class="toggle"><input id="rr-gate" type="checkbox"${opts.quality_gate === false ? "" : " checked"}> best parts only</label>
     </div>
     <div class="cutbar"><button class="btn primary small" id="rr-go">${ic("retry")} Re-render</button></div>`);
   $("#rr-go")?.addEventListener("click", async (event) => {
@@ -968,6 +1071,14 @@ function rerenderClip(id) {
           silence: $("#rr-silence").checked,
           loud: $("#rr-loud").checked,
           title: $("#rr-title").value,
+          captions_brand: $("#rr-brand").value,
+          captions_font: $("#rr-cap-font").value,
+          captions_anim: $("#rr-cap-anim").value,
+          transition: $("#rr-transition").value,
+          track_mode: $("#rr-track-mode").value,
+          track_zoom: $("#rr-track-zoom").value,
+          language: $("#rr-language").value,
+          quality_gate: $("#rr-gate").checked,
         }),
       });
       toast("Re-render queued");
@@ -1960,6 +2071,7 @@ window.addEventListener("DOMContentLoaded", async () => {
   else pollTimer = setInterval(refresh, 8000);
 });
 
+window.installFonts = installFonts;
 window.generate = generate;
 window.previewPicks = previewPicks;
 window.toggleManual = toggleManual;

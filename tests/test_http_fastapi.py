@@ -16,7 +16,7 @@ import unittest
 
 from fastapi.testclient import TestClient
 
-from autoshorts import config
+from autoshorts import __version__ as autoshorts_version, config
 from autoshorts.server import app, pipeline, store
 
 from . import util
@@ -71,7 +71,8 @@ class HealthAndStateTests(WorkerFixture):
         resp = self.client.get("/api/health")
         self.assertEqual(resp.status_code, 200)
         body = resp.json()
-        self.assertEqual(body["version"], "0.5.0")
+        # the reported version is the package version, not a frozen literal
+        self.assertEqual(body["version"], autoshorts_version)
         self.assertEqual(body["app"], "Qyro")
         self.assertEqual(body["brand"], "Qyro")
         self.assertIn("ffmpeg", body)

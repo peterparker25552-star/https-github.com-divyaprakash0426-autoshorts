@@ -187,8 +187,16 @@ def load_cached_transcript(video_id: str) -> list[Segment]:
     return _load_cached_segments(config.SUBS_DIR / f"{video_id}.segments.json")
 
 
-def get_transcript(video_id: str, video_url: str) -> tuple[list[Segment], str]:
-    """Fetch and cache one caption track, with paced HTTP 429 retries."""
+def get_transcript(
+    video_id: str, video_url: str, language: str = "auto"
+) -> tuple[list[Segment], str]:
+    """Fetch and cache one caption track, with paced HTTP 429 retries.
+
+    ``language`` (v0.6.0) picks which subtitle track to ask for first — ``hi``
+    prefers Hindi, ``hinglish`` Hindi-then-English, ``auto`` keeps the v0.5.0
+    English-first chain. A cached transcript always wins, so switching language
+    on an already-fetched episode needs no new request.
+    """
     cache = config.SUBS_DIR / f"{video_id}.segments.json"
     segments = _load_cached_segments(cache)
     if segments:
@@ -199,14 +207,14 @@ def get_transcript(video_id: str, video_url: str) -> tuple[list[Segment], str]:
 
     for attempt in range(3):
         hit_rate_limit = False
-        for language in config.SUB_LANG_CHAIN:
+        for sub_lang in sub_lang_chain(language):
             _pace()
             try:
                 run_ytdlp(
                     [
                         "--skip-download",
                         "--write-subs", "--write-auto-subs",
-                        "--sub-langs", language,
+                        "--sub-langs", sub_lang,
                         "--sub-format", "json3/vtt/srt/best",
                         "--sleep-subtitles", "2",
                         "--sleep-requests", "1.5",
@@ -246,6 +254,10 @@ def get_transcript(video_id: str, video_url: str) -> tuple[list[Segment], str]:
                             "start": round(segment.start, 3),
                             "end": round(segment.end, 3),
                             "text": segment.text,
+                            **({"words": [
+                                [str(w), round(float(ws), 3), round(float(we), 3)]
+                                for (w, ws, we) in (segment.words or [])
+                            ]} if getattr(segment, "words", None) else {}),
                         }
                         for segment in segments
                     ],
@@ -271,13 +283,40 @@ def get_transcript(video_id: str, video_url: str) -> tuple[list[Segment], str]:
 
 
 def _load_cached_segments(path: Path) -> list[Segment]:
+    """Read a normalized transcript cache, keeping any per-word timings.
+
+    Caches written before v0.6.0 simply have no ``words`` key, which is why
+    the lookup is optional rather than a hard requirement.
+    """
     if not path.exists():
         return []
     try:
         raw = json.loads(path.read_text(encoding="utf-8"))
-        return [Segment(row["start"], row["end"], row["text"]) for row in raw]
+        out: list[Segment] = []
+        for row in raw:
+            words = []
+            for item in row.get("words") or []:
+                try:
+                    words.append((str(item[0]), float(item[1]), float(item[2])))
+                except (TypeError, ValueError, IndexError):
+                    words = []
+                    break
+            out.append(
+                Segment(row["start"], row["end"], row["text"], words)
+            )
+        return out
     except Exception:
         return []
+
+
+def sub_lang_chain(language: str = "auto") -> list[str]:
+    """Subtitle language order for a caption language choice.
+
+    One language per request on purpose — asking yt-dlp for several at once is
+    what triggers YouTube's HTTP 429s.
+    """
+    key = str(language or "auto").strip().lower()
+    return list(config.LANGUAGE_SUBS.get(key) or config.SUB_LANG_CHAIN)
 
 
 # --------------------------------------------------------------------------

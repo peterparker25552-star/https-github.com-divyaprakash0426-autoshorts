@@ -45,11 +45,16 @@ cp ~/start-autoshorts.sh ~/bin/autoshorts 2>/dev/null || true
 
 echo
 echo "============================================================"
-echo "  ✅ Qyro v0.5.0 is installed!"
+echo "  ✅ Qyro v0.6.0 is installed!"
 echo
 echo "  TO START IT (any time):"
 echo "     open Termux and type:  bash ~/start-autoshorts.sh"
 echo
 echo "  then open Chrome at:      http://localhost:8000"
 echo "  (keep Termux open while using it)"
+echo
+echo "  Want the app icon on your home screen? Open the address in"
+echo "  Chrome, then:  menu (⋮) → Add to Home screen."
+echo
+echo "  Full beginner guide:  ANDROID-GUIDE.md  in this folder"
 echo "============================================================"

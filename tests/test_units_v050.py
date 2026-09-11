@@ -781,7 +781,8 @@ class ProbeTests(unittest.TestCase):
 class ConfigContractTests(unittest.TestCase):
     def test_version_and_names(self):
         from autoshorts import APP_NAME, __version__
-        self.assertEqual(__version__, "0.5.0")
+        # both must move together; a stale one is a release bug
+        self.assertEqual(__version__, config.APP_VERSION)
         self.assertEqual(APP_NAME, "Qyro")
         self.assertEqual(config.APP_NAME, "Qyro")
 

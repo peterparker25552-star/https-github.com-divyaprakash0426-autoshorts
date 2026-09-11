@@ -103,6 +103,7 @@ def api_health() -> dict:
         "disk_total": disk["total"],
         "llm_available": bool(engine.available(store.settings()) or llm.available()),
         "engine": engine.public_state(store.settings()),
+        "options": maintenance.render_options_catalog(),
     }
 
 
@@ -384,7 +385,12 @@ def api_transcript(ep_id: str) -> dict:
     episode = _get_episode_or_404(ep_id)
     try:
         segments, source = _episode_segments(episode)
-        return {"source": source, "segments": [segment.__dict__ for segment in segments]}
+        return {"source": source, "segments": [
+            {"start": float(segment.start),
+             "end": float(segment.end),
+             "text": segment.text}
+            for segment in segments
+        ]}
     except Exception as exc:
         raise ApiError(502, str(exc)) from exc
 
@@ -646,6 +652,15 @@ class Handler(BaseHTTPRequestHandler):
             if method != "POST":
                 raise ApiError(405, "Method not allowed")
             self._send_json(api_load_url(body))
+            return
+
+        # POST /api/fonts/install — copy the bundled Hindi fonts into the
+        # user font dir so Devanagari captions draw real glyphs (v0.6.0).
+        if parts == ["fonts", "install"]:
+            if method != "POST":
+                raise ApiError(405, "Method not allowed")
+            self._send_json(maintenance.fonts_install(
+                bool(body.get("force"))))
             return
 
         # POST /api/demo/load

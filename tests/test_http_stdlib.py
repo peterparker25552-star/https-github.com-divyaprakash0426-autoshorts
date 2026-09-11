@@ -16,6 +16,8 @@ import zipfile
 from io import BytesIO
 from pathlib import Path
 
+from autoshorts import __version__ as autoshorts_version
+
 from . import util
 
 
@@ -90,7 +92,7 @@ class HealthTests(StdlibServerBase):
         status, body, headers = self.get("/api/health")
         self.assertEqual(status, 200)
         self.assertIn("application/json", headers["Content-Type"])
-        self.assertEqual(body["version"], "0.5.0")
+        self.assertEqual(body["version"], autoshorts_version)
         self.assertEqual(body["app"], "Qyro")
         self.assertEqual(body["brand"], "Qyro")
         self.assertIsInstance(body["youtube_reachable"], bool)

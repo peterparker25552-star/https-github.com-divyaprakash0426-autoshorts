@@ -1075,3 +1075,29 @@ code { font: 12px/1.4 var(--mono); color: var(--cyan); }
    invisible full-screen layer swallows every tap on the app. */
 [hidden] { display: none !important; }
 .modal-root:not([hidden]) { display: flex; }
+
+/* ---- v0.6.0 ---- */
+/* The "Hindi needs a Devanagari font" row inside the fine-tune grid. */
+.advgrid .warn {
+  grid-column: 1 / -1;
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+  padding: 0.5rem 0.6rem;
+  border-radius: 8px;
+  border: 1px solid color-mix(in srgb, var(--warn, #d98c1f) 55%, transparent);
+  background: color-mix(in srgb, var(--warn, #d98c1f) 12%, transparent);
+  color: var(--text, #eee);
+  font-size: 0.8rem;
+}
+
+.advgrid .warn svg {
+  width: 15px;
+  height: 15px;
+  flex: 0 0 auto;
+  stroke: currentColor;
+}
+
+.advgrid .warn .btn {
+  margin-left: auto;
+}

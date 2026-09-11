@@ -81,6 +81,12 @@ def _episode_segments(ep: dict) -> tuple[list[Segment], str]:
 # ---------------------------------------------------------------------------
 # API
 # ---------------------------------------------------------------------------
+@app.post("/api/fonts/install")
+def fonts_install(body: dict | None = None):
+    """Install the bundled Devanagari fonts (Hindi captions need them)."""
+    return maintenance.fonts_install(bool((body or {}).get("force")))
+
+
 @app.get("/api/health")
 def health():
     disk = maintenance.disk_usage()
@@ -96,6 +102,7 @@ def health():
         "disk_total": disk["total"],
         "llm_available": bool(engine.available(store.settings()) or llm.available()),
         "engine": engine.public_state(store.settings()),
+        "options": maintenance.render_options_catalog(),
     }
 
 
@@ -327,7 +334,12 @@ def episode_transcript(ep_id: str):
     episode = _get_episode_or_404(ep_id)
     try:
         segments, source = _episode_segments(episode)
-        return {"source": source, "segments": [segment.__dict__ for segment in segments]}
+        return {"source": source, "segments": [
+            {"start": float(segment.start),
+             "end": float(segment.end),
+             "text": segment.text}
+            for segment in segments
+        ]}
     except Exception as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
 

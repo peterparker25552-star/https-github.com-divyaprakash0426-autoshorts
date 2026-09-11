@@ -49,6 +49,39 @@ if ! command -v yt-dlp >/dev/null 2>&1 \
 fi
 
 echo
+echo "Installing the Hindi (Devanagari) caption font..."
+# Qyro renders Hindi with libass, which asks fontconfig for the font family.
+# A font that only sits in the app folder is never selected, so it has to land
+# in ~/.fonts (fontconfig scans that, no root needed on Android).
+FONT_TMP="$(mktemp -d)"
+if python -m pip install --quiet devanagari-fonts 2>/dev/null; then
+  FONT_SRC="$(python - <<'PY'
+import pathlib, importlib.util
+spec = importlib.util.find_spec("devanagari_fonts")
+if spec and spec.submodule_search_locations:
+    root = pathlib.Path(list(spec.submodule_search_locations)[0])
+    hits = sorted(root.glob("fonts/Shobhika-*/Shobhika-*.otf"))
+    if hits:
+        print(hits[0].parent)
+PY
+)"
+  if [ -n "$FONT_SRC" ] && [ -d "$FONT_SRC" ]; then
+    mkdir -p "$HOME/.fonts"
+    cp -f "$FONT_SRC"/Shobhika-*.otf "$HOME/.fonts/" 2>/dev/null || true
+    echo " (Shobhika Devanagari font installed to ~/.fonts)"
+  fi
+fi
+command -v fc-cache >/dev/null 2>&1 && fc-cache -f >/dev/null 2>&1 || true
+rm -rf "$FONT_TMP"
+if [ ! -f "$HOME/.fonts/Shobhika-Regular.otf" ]; then
+  echo
+  echo " [!] No Hindi font yet — Hindi captions would show boxes."
+  echo "     Fix it from the app: the Hindi warning has an Install fonts"
+  echo "     button, or run:  pip install devanagari-fonts"
+  echo
+fi
+
+echo
 echo "============================================================"
 echo "  Installed! Start the app with:  bash run-android.sh"
 echo "  Then open http://localhost:8000 in Chrome."

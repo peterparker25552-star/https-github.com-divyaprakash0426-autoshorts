@@ -15,6 +15,7 @@ from pathlib import Path
 
 from . import config
 from . import logofx
+from . import vision
 from .transcripts import Segment
 
 # libx264/aac output settings shared by every render path.
@@ -240,7 +241,75 @@ def autofit_fontsize(
     return max(int(min_size), min(int(font_size), fitting))
 
 
-def _ass_header(play_w: int, play_h: int, params: dict, box: bool = False) -> str:
+def _anim_block(anim: str, params: dict) -> str:
+    """libass override tags that animate a whole Dialogue line (``""`` = none).
+
+    Every preset uses only standard libass tags (``\\fad``, ``\\t``,
+    ``\\fscx``/``\\fscy``, ``\\frz``, ``\\bord``, ``\\blur``) so it renders
+    identically on a phone and on a desktop. ``karaoke`` is *not* handled here:
+    it re-times the words with ``\\kf`` instead of prefixing the line.
+    """
+    name = str(anim or "none").strip().lower()
+    if name not in config.CAPTION_ANIMS or name in ("none", "karaoke"):
+        return ""
+    fade_in, fade_out = config.ANIM_FADE_MS
+    pop = int(config.ANIM_POP_MS)
+    if name == "fade":
+        return f"{{\\fad({fade_in},{fade_out})}}"
+    if name == "pop":
+        return (
+            f"{{\\fscx62\\fscy62\\fad(60,60)"
+            f"\\t(0,{pop},\\fscx100\\fscy100)}}"
+        )
+    if name == "zoom":
+        return (
+            f"{{\\fscx138\\fscy138\\fad(70,70)"
+            f"\\t(0,{pop + 60},\\fscx100\\fscy100)}}"
+        )
+    if name == "bounce":
+        return (
+            f"{{\\fscy42\\fscx104\\fad(60,60)"
+            f"\\t(0,{pop},\\fscy114\\fscx97)"
+            f"\\t({pop},{pop + 90},\\fscy100\\fscx100)}}"
+        )
+    if name == "glow":
+        base = max(1, int(params.get("outline") or 3))
+        return f"{{\\bord{base * 3}\\fad(90,90)\\t(0,260,\\bord{base})}}"
+    if name == "blurin":
+        return "{\\blur7\\fad(130,70)\\t(0,230,\\blur0)}"
+    if name == "drop":
+        return f"{{\\frz-6\\fad(90,90)\\t(0,{pop + 40},\\frz0)}}"
+    return ""
+
+
+def karaoke_text(words: list[str], total_cs: int) -> str:
+    """Join ``words`` with ``\\kf`` timings that exactly fill ``total_cs``.
+
+    ``\\kf`` is the smooth karaoke sweep (SecondaryColour -> PrimaryColour),
+    which is why the header gives a karaoke line a distinct SecondaryColour.
+    """
+    words = [w for w in words if w]
+    if not words:
+        return ""
+    total = max(len(words), int(total_cs))
+    base = max(1, total // len(words))
+    parts = []
+    for index, word in enumerate(words):
+        span = base
+        if index == len(words) - 1:
+            span = max(1, total - base * (len(words) - 1))
+        parts.append(f"{{\\kf{span}}}{_ass_escape(word)}")
+    return " ".join(parts)
+
+
+def _ass_header(
+    play_w: int,
+    play_h: int,
+    params: dict,
+    box: bool = False,
+    font: str | None = None,
+    secondary: str | None = None,
+) -> str:
     border_style = 3 if box else 1
     if box:
         # Opaque-box look: semi-dark outline box + near-opaque shadow colour.
@@ -252,6 +321,8 @@ def _ass_header(play_w: int, play_h: int, params: dict, box: bool = False) -> st
     # A brand preset may carry its own colours; otherwise the v0.4.0 defaults.
     primary = str(params.get("primary") or "&H00FFFFFF")
     outline_colour = str(params.get("outline_colour") or outline_colour)
+    font_name = str(font or config.CAPTION_FONT)
+    secondary_colour = str(secondary or primary)
     return (
         "[Script Info]\n"
         "ScriptType: v4.00+\n"
@@ -264,13 +335,29 @@ def _ass_header(play_w: int, play_h: int, params: dict, box: bool = False) -> st
         " OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX,"
         " ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment,"
         " MarginL, MarginR, MarginV, Encoding\n"
-        f"Style: {params['name']},{config.CAPTION_FONT},{params['font_size']},"
-        f"{primary},{primary},{outline_colour},{back_colour},{params['bold']},0,0,0,"
+        f"Style: {params['name']},{font_name},{params['font_size']},"
+        f"{primary},{secondary_colour},{outline_colour},{back_colour},"
+        f"{params['bold']},0,0,0,"
         f"100,100,0,0,{border_style},{params['outline']},1,2,60,60,{params['margin_v']},1\n\n"
         "[Events]\n"
         "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV,"
         " Effect, Text\n"
     )
+
+
+def _timed_words(segment: Segment) -> list[tuple[str, float, float]]:
+    """Per-word timings for a segment, or ``[]`` when the source had none."""
+    words = getattr(segment, "words", None) or []
+    out: list[tuple[str, float, float]] = []
+    for item in words:
+        try:
+            text, start, end = str(item[0]), float(item[1]), float(item[2])
+        except (TypeError, ValueError, IndexError):
+            return []
+        if not text.strip():
+            continue
+        out.append((text.strip(), start, max(end, start + 0.04)))
+    return out
 
 
 def make_ass(
@@ -286,6 +373,9 @@ def make_ass(
     pos: str | None = None,
     box: bool | None = None,
     brand: str = config.DEFAULT_CAPTION_BRAND,
+    font: str = "",
+    anim: str = "none",
+    language: str = "auto",
 ) -> Path:
     """Build an ASS subtitle file for [clip_start, clip_end], 0-based times.
 
@@ -309,6 +399,18 @@ def make_ass(
     line, and switches word-pop timing on for chunked styles. ``none`` (the
     default) reproduces the v0.4.0 file byte-for-byte.
 
+    v0.6.0:
+
+    * ``font`` — a font *id* (see :mod:`autoshorts.fonts`) resolved against
+      the fonts actually installed. Empty keeps ``config.CAPTION_FONT``.
+    * ``anim`` — a caption animation preset burned into every event.
+    * ``language`` — ``hi``/Devanagari text is never upper-cased, gets more
+      words per line, a slightly larger size, and a Devanagari font.
+    * When the transcript carries **word timings** (YouTube json3 / tagged
+      VTT) chunks are timed from the real words instead of splitting the
+      segment duration evenly — this is what makes captions land on the
+      syllable instead of drifting.
+
     Font auto-fit shrinks the style font whenever the longest word in the clip
     would overflow the frame width (never below
     :data:`config.CAPTION_MIN_FONT`).
@@ -316,6 +418,8 @@ def make_ass(
     ``speed`` scales every event timestamp by ``1/speed`` because the renderer
     speeds the media up by the same factor.
     """
+    from . import fonts as fonts_mod
+
     style = caption_style if caption_style in config.CAPTION_STYLES else config.DEFAULT_CAPTIONS
     try:
         rate = float(speed)
@@ -342,6 +446,23 @@ def make_ass(
     word_pop = style == "pop" or bool(bundle and bundle.get("pop"))
     if str(pos) == "low":
         params["margin_v"] = params["low_margin_v"]
+
+    animation = str(anim or "none").strip().lower()
+    if animation not in config.CAPTION_ANIMS:
+        animation = "none"
+    karaoke = animation == "karaoke"
+
+    all_text = " ".join(seg.text for seg in segments)
+    deva = fonts_mod.wants_devanagari(all_text, language)
+    font_name, _font_note = fonts_mod.resolve(font, all_text, language)
+    if deva:
+        # Devanagari matras need headroom and the words are longer
+        params["font_size"] = int(params["font_size"] * config.HINDI_FONT_SIZE_SCALE)
+        params["outline"] = max(params["outline"], 2)
+        group_base = config.HINDI_WORDS_PER_LINE
+    else:
+        group_base = int(words_per_caption)
+
     window = max(float(clip_end) - float(clip_start), 0.01)
     big_size = int(params["font_size"] * 1.3)
 
@@ -349,23 +470,34 @@ def make_ass(
     # whole clip, then size the font once for the whole file.
     chunks: list[tuple[float, float, list[str]]] = []
     for segment in segments:
-        words = [w for w in segment.text.split() if w]
+        duration = max(segment.end - segment.start, 0.4)
+        timed = _timed_words(segment)
+        if timed:
+            words = [item[0] for item in timed]
+        else:
+            words = [w for w in segment.text.split() if w]
+            timed = []
         if not words:
             continue
-        duration = max(segment.end - segment.start, 0.4)
-        group = words_per_caption
+        group = group_base
         if style == "minimal":
-            group = max(words_per_caption * 2, 6)
+            group = max(group_base * 2, 6)
         elif style == "pop":
-            group = max(1, min(words_per_caption, 3))
+            group = max(1, min(group_base, 3))
         if word_pop and style != "pop":
-            group = max(1, min(words_per_caption, 3))
+            group = max(1, min(group_base, 3))
         for offset in range(0, len(words), group):
             part = words[offset : offset + group]
-            frac0 = offset / len(words)
-            frac1 = min((offset + len(part)) / len(words), 1.0)
-            chunk_start = segment.start + duration * frac0
-            chunk_end = segment.start + duration * frac1
+            if timed:
+                # real per-word timings: the chunk starts when its first word
+                # is spoken and ends when its last one finishes
+                chunk_start = timed[offset][1]
+                chunk_end = timed[min(offset + len(part), len(timed)) - 1][2]
+            else:
+                frac0 = offset / len(words)
+                frac1 = min((offset + len(part)) / len(words), 1.0)
+                chunk_start = segment.start + duration * frac0
+                chunk_end = segment.start + duration * frac1
             if chunk_end <= clip_start or chunk_start >= clip_end:
                 continue
             chunks.append((chunk_start, chunk_end, part))
@@ -379,6 +511,16 @@ def make_ass(
         big_size = int(params["font_size"] * 1.3)
 
     emphasis = str(params.get("emphasis") or _POP_EMPHASIS)
+    anim_tags = _anim_block(animation, params)
+    primary = str(params.get("primary") or "&H00FFFFFF")
+    # ``{\r}`` would reset the animation mid-line, so an animated word-pop
+    # restores colour/size/weight explicitly instead.
+    restore_bold = 1 if int(params.get("bold") or 0) == -1 else 0
+    restore = (
+        "{\\r}"
+        if not anim_tags
+        else f"{{\\c{primary}&\\b{restore_bold}\\fs{params['font_size']}}}"
+    )
     events: list[str] = []
 
     def emit(rel_start: float, rel_end: float, text: str) -> None:
@@ -386,7 +528,7 @@ def make_ass(
         end_scaled = max(start_scaled + 0.05, rel_end / rate)
         events.append(
             f"Dialogue: 0,{_ass_time(start_scaled)},{_ass_time(end_scaled)},"
-            f"{params['name']},,0,0,0,,{text}"
+            f"{params['name']},,0,0,0,,{anim_tags}{text}"
         )
 
     for chunk_start, chunk_end, part in chunks:
@@ -395,13 +537,18 @@ def make_ass(
         if rel_end - rel_start < 0.15:
             rel_end = min(window, rel_start + 0.4)
 
-        if word_pop:
+        if karaoke:
+            emit(
+                rel_start, rel_end,
+                karaoke_text(part, int((rel_end - rel_start) / rate * 100)),
+            )
+        elif word_pop:
             span = max(rel_end - rel_start, 0.2) / len(part)
             for index, word in enumerate(part):
                 piece = [_ass_escape(other) for other in part]
                 piece[index] = (
                     f"{{\\c{emphasis}&\\b1\\fs{big_size}}}"
-                    f"{_ass_escape(word)}{{\\r}}"
+                    f"{_ass_escape(word)}{restore}"
                 )
                 emit(
                     rel_start + index * span,
@@ -410,11 +557,14 @@ def make_ass(
                 )
         else:
             text = " ".join(_ass_escape(word) for word in part)
-            if style == "classic":
+            if style == "classic" and not deva:
                 text = text.upper()
             emit(rel_start, rel_end, text)
 
-    header = _ass_header(play_w, play_h, params, box=bool(box))
+    secondary = emphasis if karaoke else None
+    header = _ass_header(
+        play_w, play_h, params, box=bool(box), font=font_name, secondary=secondary
+    )
     out_path.write_text(header + "\n".join(events) + "\n", encoding="utf-8")
     return out_path
 
@@ -667,6 +817,154 @@ def smart_crop_for_window(
         return None
 
 
+def _piecewise_expr(points: list[tuple[float, float]]) -> str:
+    """Linear-interpolation chain over ascending ``(t, value)`` keyframes.
+
+    Unlike :func:`_stepped_x_expr` this produces a *continuous* ramp, which is
+    what makes a tracked crop glide instead of jump. Nesting depth equals the
+    keyframe count, so callers simplify the path first.
+    """
+    if not points:
+        return "0"
+    if len(points) == 1:
+        return f"{float(points[0][1]):.2f}"
+    expr = f"{float(points[-1][1]):.2f}"
+    for i in range(len(points) - 2, -1, -1):
+        t0, v0 = float(points[i][0]), float(points[i][1])
+        t1, v1 = float(points[i + 1][0]), float(points[i + 1][1])
+        span = max(t1 - t0, 1e-3)
+        expr = (
+            f"if(lt(t,{t1:.3f}),{v0:.2f}+({v1 - v0:.2f})*(t-{t0:.3f})"
+            f"/{span:.3f},{expr})"
+        )
+    return expr
+
+
+def _clamped_even_expr(inner: str, span: int) -> str:
+    """Wrap an x/y expression so it is even and stays inside ``[0, span]``.
+
+    Commas are left *unescaped* on purpose: :func:`_escape_expr` escapes the
+    whole expression exactly once, and a pre-escaped ``\\,`` would arrive at
+    ffmpeg's evaluator as ``\\\\,`` and fail to parse.
+    """
+    span = max(0, int(span))
+    if span == 0:
+        return "0"
+    return f"min(max(2*trunc(({inner})/2),0),{span})"
+
+
+def path_expressions(
+    keyframes: list[tuple[float, float, float]],
+    keeps: list[tuple[float, float]] | None,
+    speed: float,
+    crop_w: int,
+    crop_h: int,
+    src_w: int,
+    src_h: int,
+) -> tuple[str, str]:
+    """``(x_expr, y_expr)`` for a tracked crop, on the OUTPUT timeline.
+
+    ``keyframes`` are ``(window_time, cx, cy)`` from :mod:`autoshorts.vision`
+    with ``cx``/``cy`` as fractions of the source frame. Each keyframe is
+    remapped through the silence keeps and the speed factor (exactly like
+    :func:`smart_x_expression`), turned into a crop *offset* by subtracting
+    half the crop, then evened and clamped to the legal range.
+    """
+    try:
+        rate = float(speed)
+    except (TypeError, ValueError):
+        rate = 1.0
+    if rate <= 0:
+        rate = 1.0
+    crop_w = max(2, int(crop_w))
+    crop_h = max(2, int(crop_h))
+    span_x = max(int(src_w) - crop_w, 0)
+    span_y = max(int(src_h) - crop_h, 0)
+    if not keyframes or (span_x == 0 and span_y == 0):
+        return "0", "0"
+    xs: dict[float, int] = {}
+    ys: dict[float, int] = {}
+    for t_src, cx, cy in keyframes:
+        t_out = round(
+            remap_time(float(t_src), keeps or [(0.0, math.inf)]) / rate, 3
+        )
+        left = (float(cx) - crop_w / (2.0 * max(1, int(src_w)))) * int(src_w)
+        top = (float(cy) - crop_h / (2.0 * max(1, int(src_h)))) * int(src_h)
+        xs[t_out] = min(_even(left), span_x)
+        ys[t_out] = min(_even(top), span_y)
+    return (
+        _clamped_even_expr(_piecewise_expr(_anchor(list(xs.items()))), span_x),
+        _clamped_even_expr(_piecewise_expr(_anchor(list(ys.items()))), span_y),
+    )
+
+
+def _anchor(points: list[tuple[float, int]]) -> list[tuple[float, int]]:
+    """Anchor ``t=0`` and drop interior keyframes that change nothing.
+
+    A crop that only pans horizontally still produces a y keyframe per sample;
+    collapsing the constant runs keeps the generated expression small enough
+    to read (and cheap for ffmpeg to evaluate per frame).
+    """
+    ordered = sorted(points)
+    if ordered and ordered[0][0] > 0.011:
+        ordered.insert(0, (0.0, ordered[0][1]))
+    merged: list[tuple[float, int]] = []
+    for t, value in ordered:
+        if merged and merged[-1][1] == value:
+            continue
+        merged.append((t, value))
+    return merged
+
+
+def transition_stage(
+    transition: str,
+    out_dur: float | None,
+    width: int,
+    height: int,
+    seconds: float = config.TRANSITION_SECONDS,
+) -> str:
+    """Filter text (no labels) for a clip-edge transition; ``""`` for none.
+
+    Every variant is duration-preserving, so burned-in captions stay in sync.
+    ``slide`` pads to double height and crops a window that walks into place,
+    which is how a slide reveal is done without a second input.
+    """
+    name = str(transition or "none").strip().lower()
+    if name not in config.TRANSITIONS or name == "none":
+        return ""
+    try:
+        dur = max(float(out_dur or 0.0), 0.0)
+    except (TypeError, ValueError):
+        dur = 0.0
+    # A fade needs room to breathe; on a sub-second clip it is just a flicker.
+    if dur < 1.0:
+        return ""
+    fade = max(0.05, min(float(seconds), dur / 3.0))
+    if dur <= fade * 2:
+        return ""
+    out_start = max(0.0, dur - fade)
+    if name == "fade":
+        return (
+            f",fade=t=in:st=0:d={fade:.3f},"
+            f"fade=t=out:st={out_start:.3f}:d={fade:.3f}"
+        )
+    if name == "dip":
+        return (
+            f",fade=t=in:st=0:d={fade:.3f}:color=white,"
+            f"fade=t=out:st={out_start:.3f}:d={fade:.3f}:color=white"
+        )
+    if name == "flash":
+        return f",fade=t=in:st=0:d={min(fade, 0.18):.3f}:color=white"
+    if name == "slide":
+        rise = max(0.12, min(0.45, fade * 1.6))
+        return (
+            f",pad={int(width)}:{int(height) * 2}:0:{int(height)}:color=black,"
+            f"crop={int(width)}:{int(height)}:0:"
+            f"'oh*min(t/{rise:.3f}\\,1)'"
+        )
+    return ""
+
+
 def video_chain(
     style: str,
     width: int,
@@ -678,6 +976,9 @@ def video_chain(
     fmt: str = config.DEFAULT_FORMAT,
     smart: tuple[int, int, str] | None = None,
     speed: float = config.DEFAULT_SPEED,
+    track_plan: tuple[int, int, str, str] | None = None,
+    transition: str = "none",
+    fontsdir: str = "",
 ) -> str:
     """Video filter chain that ends in ``[v]``.
 
@@ -688,12 +989,18 @@ def video_chain(
     * ``blur`` — blurred background + sharp fitted foreground
     * ``crop`` / ``fill`` — scale to fill, center crop
     * ``fit`` — scale to fit, padded with black
-    * ``smart`` — motion-tracking crop (``smart`` carries the pre-computed
-      ``(crop_w, crop_h, x_expr)``; without it, a static center crop)
+    * ``smart`` — subject-tracking crop. ``track_plan`` carries the v0.6.0
+      ``(crop_w, crop_h, x_expr, y_expr)`` plan from :mod:`autoshorts.vision`
+      and wins when present; ``smart`` is the v0.5.0 thirds fallback
+      ``(crop_w, crop_h, x_expr)``; without either, a static center crop.
 
     ``speed`` > 1 compresses the *single-pass* timeline (``setpts``); the
     silence path already bakes speed into its per-segment chains, so it passes
     1.0 here.
+
+    ``transition`` adds a duration-preserving edge effect before the captions.
+    ``fontsdir`` points libass at Qyro's font folder so user-supplied and
+    Indic fonts work with no system font install.
 
     ``progress`` appends an amber ``drawbox`` bar along the top edge whose
     width is ``iw*min(t/D\\,1)``.
@@ -714,7 +1021,14 @@ def video_chain(
             f"pad={width}:{height}:(ow-iw)/2:(oh-ih)/2:color=black"
         )
     elif style == "smart":
-        if smart:
+        if track_plan:
+            cw, ch, x_expr, y_expr = track_plan
+            head = (
+                f"[{vin}]crop={int(cw)}:{int(ch)}:"
+                f"'{_escape_expr(x_expr)}':'{_escape_expr(y_expr)}',"
+                f"scale={width}:{height}"
+            )
+        elif smart:
             cw, ch, expr = smart
             head = (
                 f"[{vin}]crop={int(cw)}:{int(ch)}:'{_escape_expr(expr)}':0,"
@@ -747,9 +1061,16 @@ def video_chain(
     if abs(rate - 1.0) > 1e-9:
         head += f",setpts=PTS/{rate:g}"
 
+    # Edge transitions run before the captions so the text never fades with
+    # the picture, and after framing so the geometry is already final.
+    head += transition_stage(transition, out_dur, width, height)
+
     tail = ""
     if ass:
-        tail += f",ass={_escape_filter(str(ass))}"
+        ass_arg = _escape_filter(str(ass))
+        tail += f",ass={ass_arg}"
+        if fontsdir:
+            tail += f":fontsdir={_escape_filter(str(fontsdir))}"
     if progress and out_dur and float(out_dur) > 0:
         tail += (
             f",drawbox=x=0:y=0:w='iw*min(t/{float(out_dur):.3f}\\,1)':h=6:"
@@ -1044,6 +1365,10 @@ def render_clip(
     audio_mix: str = config.DEFAULT_AUDIO_MIX,
     silence_noise: float = config.DEFAULT_SILENCE_NOISE,
     silence_min: float = config.DEFAULT_SILENCE_MIN,
+    track_mode: str = config.DEFAULT_TRACK_MODE,
+    track_zoom: str = config.DEFAULT_TRACK_ZOOM,
+    transition: str = config.DEFAULT_TRANSITION,
+    fontsdir: str = "",
 ) -> Path:
     """Render one short, degrading *optional* stages instead of failing.
 
@@ -1057,18 +1382,25 @@ def render_clip(
         ass_path=ass_path, style=style, width=width, height=height, speed=speed,
         progress=progress, silence=silence, loud=loud, fmt=fmt,
         audio_mix=audio_mix, silence_noise=silence_noise, silence_min=silence_min,
+        track_mode=track_mode, track_zoom=track_zoom, fontsdir=fontsdir,
     )
-    variants: list[tuple[dict | None, Path | str | None]] = [(logo, track)]
+    variants: list[tuple[dict | None, Path | str | None, str]] = [
+        (logo, track, transition)
+    ]
     if logo:
-        variants.append((None, track))
+        variants.append((None, track, transition))
     if track:
-        variants.append((logo, None))
+        variants.append((logo, None, transition))
+    # A transition is cosmetic: if ffmpeg rejects it the clip still renders.
+    if str(transition) != "none":
+        variants.append((logo, track, "none"))
     if logo and track:
-        variants.append((None, None))
-    for index, (logo_try, track_try) in enumerate(variants):
+        variants.append((None, None, "none"))
+    for index, (logo_try, track_try, transition_try) in enumerate(variants):
         try:
             return _render_clip(Path(src), float(start), float(end), Path(out),
-                                logo=logo_try, track=track_try, **base)
+                                logo=logo_try, track=track_try,
+                                transition=transition_try, **base)
         except RuntimeError:
             if index + 1 >= len(variants):
                 raise
@@ -1095,6 +1427,10 @@ def _render_clip(
     audio_mix: str = config.DEFAULT_AUDIO_MIX,
     silence_noise: float = config.DEFAULT_SILENCE_NOISE,
     silence_min: float = config.DEFAULT_SILENCE_MIN,
+    track_mode: str = config.DEFAULT_TRACK_MODE,
+    track_zoom: str = config.DEFAULT_TRACK_ZOOM,
+    transition: str = config.DEFAULT_TRANSITION,
+    fontsdir: str = "",
 ) -> Path:
     """Cut ``[start, end]`` out of ``src`` into a captioned short.
 
@@ -1137,6 +1473,43 @@ def _render_clip(
             return None
         return smart_crop_for_window(src, float(start), float(end),
                                      width, height, keeps, rate)
+
+    def track_planner(keeps: list[tuple[float, float]] | None):
+        """v0.6.0 subject tracking; ``None`` falls back to :func:`smart_plan`.
+
+        Every failure — no ffmpeg headroom, empty analysis, a dead proxy —
+        returns ``None``, so the render degrades to the v0.5.0 thirds crop
+        instead of failing.
+        """
+        if style != "smart" or fmt == "wide":
+            return None
+        if str(track_mode or "auto").strip().lower() == "off":
+            return None
+        if src_w <= 0 or src_h <= 0:
+            return None
+        cw, ch = crop_dims(src_w, src_h, int(width), int(height))
+        if src_w - cw < 8 and src_h - ch < 8:
+            return None          # the crop is already the whole frame
+        try:
+            plan = vision.track_window(
+                src, float(start), float(end), src_w, src_h,
+                int(width), int(height),
+                cw / float(src_w), ch / float(src_h),
+                mode=track_mode, zoom=track_zoom,
+            )
+        except Exception:
+            return None
+        if not plan or not plan.keyframes:
+            return None
+        zoomed_w = max(2, _even(cw * float(plan.zoom)))
+        zoomed_h = max(2, _even(ch * float(plan.zoom)))
+        if zoomed_w > src_w or zoomed_h > src_h:
+            zoomed_w, zoomed_h = cw, ch
+        x_expr, y_expr = path_expressions(
+            plan.keyframes, keeps or [(0.0, window)], rate,
+            zoomed_w, zoomed_h, src_w, src_h,
+        )
+        return zoomed_w, zoomed_h, x_expr, y_expr
 
     audio_ok = has_audio(src)
     track_path = Path(track) if track else None
@@ -1181,6 +1554,8 @@ def _render_clip(
                 graph += ";" + video_chain(
                     style, width, height, mapped_ass, out_dur, progress,
                     vin="ccv", fmt=fmt, smart=smart_plan(ranges), speed=1.0,
+                    track_plan=track_planner(ranges), transition=transition,
+                    fontsdir=fontsdir,
                 )
                 audio_label: str | None = None
                 if track_ok:
@@ -1216,6 +1591,8 @@ def _render_clip(
     graph = video_chain(
         style, width, height, ass_path, window / rate, progress, vin=vin,
         fmt=fmt, smart=smart_plan([(0.0, window)]), speed=rate,
+        track_plan=track_planner([(0.0, window)]), transition=transition,
+        fontsdir=fontsdir,
     )
     args = [
         "-ss", f"{float(start):.3f}",

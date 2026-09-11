@@ -16,6 +16,37 @@ playlist URL ──▶ yt-dlp ──▶ transcripts ──▶ highlight engine �
                  captions)                     questions · energy)   burned-in captions)
 ```
 
+## What's new in v0.6.0 — the camera follows the person
+
+- **Subject tracking instead of a static crop.** The old behaviour cropped the
+  middle of a wide shot and kept whatever happened to fit, which put people out
+  of frame. Qyro now analyses the video, finds the speaker, and pans and zooms
+  a 9:16 window to keep them in shot. All the pixel work happens inside ffmpeg
+  (a downscaled heat map of skin-tone plus motion), so a 30 s clip is analysed
+  in about 1.5 s and the result is cached. On a test clip where the subject
+  sweeps across the frame, the tracked render holds the subject at
+  0.47–0.53 of the frame width while a static centre crop loses them entirely.
+  Optional OpenCV face detection sharpens it further when installed; it is not
+  required.
+- **A quality gate on the cuts.** After the highlight engine proposes windows,
+  each one is graded on speech density, the longest pause inside it, and filler
+  at the edges, then re-ranked and trimmed. Thin, rambling or dead-air-heavy
+  stretches drop out, so only the good parts become clips.
+- **Per-word caption timing.** Captions now pop word by word on the actual
+  subtitle timings instead of being spread evenly across a line.
+- **Nine caption animations** — fade, pop, zoom, bounce, glow, blur in,
+  karaoke (words light up as they are spoken) and drop — plus **four clip
+  transitions** (fade, dip, flash, slide) that preserve duration, so burned-in
+  captions never drift out of sync.
+- **Ten caption fonts and real Hindi support.** Hindi captions are no longer
+  forced into CAPITAL LETTERS, get more words per line, and render in a
+  Devanagari font. Qyro installs the OFL-licensed Shobhika font into
+  `~/.fonts` on demand (one button in the UI, no root) because libass resolves
+  families through fontconfig — without that step every Hindi word renders as
+  a box.
+- **Hindi and Hinglish subtitle selection** when downloading from YouTube.
+- **Android** — a full beginner guide: [ANDROID-GUIDE.md](ANDROID-GUIDE.md).
+
 ## What's new in v0.5.0 — **Qyro**
 
 The project is now called **Qyro** (same repo, same installers, same `autoshorts`
@@ -202,8 +233,11 @@ Optional: set `OPENAI_API_KEY` (+ `OPENAI_BASE_URL`, `OPENAI_MODEL`) in the envi
 ## Render options
 
 Every `shorts`, `manual`, `rerender` and `batch` request accepts the same set of
-options (v0.5.0 added the last seven rows). Unknown values are rejected with `422`, and the options are stored on
-each clip so **Re-render** and **Retry** reproduce exactly what produced it.
+options (v0.5.0 added the middle block, v0.6.0 the last seven rows). Unknown
+values are rejected with `422`, and the options are stored on each clip so
+**Re-render** and **Retry** reproduce exactly what produced it. `/api/health`
+returns the same catalog as JSON, which is what the web UI builds its pickers
+from, so the two can never disagree.
 
 | Option | Values | Default | Notes |
 | --- | --- | --- | --- |
@@ -222,6 +256,13 @@ each clip so **Re-render** and **Retry** reproduce exactly what produced it.
 | `progress` | `true` / `false` | `false` | burned-in bottom progress bar |
 | `silence` | `true` / `false` | `false` | detect pauses ≥0.4 s and jump-cut them out |
 | `loud` | `true` / `false` | `false` | `loudnorm` (≈ -16 LUFS) |
+| `track_mode` | `auto`, `vision`, `face`, `off` | `auto` | follow the speaker instead of a static crop; `face` needs OpenCV, `off` is the old thirds crop |
+| `track_zoom` | `auto`, `tight`, `normal`, `wide` | `auto` | headroom left around the tracked subject |
+| `captions_font` | `auto`, `bold`, `rounded`, `condensed`, `serif`, `mono`, `impact`, `hand`, `devanagari`, `devanagari-serif` | `auto` | resolved against the fonts actually installed |
+| `captions_anim` | `none`, `fade`, `pop`, `zoom`, `bounce`, `glow`, `blurin`, `karaoke`, `drop` | `fade` | libass entrance tags; `karaoke` re-times the words |
+| `transition` | `none`, `fade`, `dip`, `flash`, `slide` | `fade` | duration-preserving, so captions stay in sync |
+| `language` | `auto`, `en`, `hi`, `hinglish` | `auto` | Hindi skips upper-casing, uses a Devanagari font and more words per line |
+| `quality_gate` | `true` / `false` | `true` | grade each candidate window on speech density and dead air, then re-rank and trim |
 
 ## Configuration
 

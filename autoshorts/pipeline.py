@@ -12,7 +12,8 @@ import traceback
 import uuid
 from pathlib import Path
 
-from . import audioswap, beats, config, demo, engine, highlights, logofx
+from . import (audioswap, beats, config, demo, engine, fonts, highlights,
+               logofx, quality)
 from . import maintenance, titles, youtube
 from .ffmpeg import (
     extract_thumbnail,
@@ -170,6 +171,29 @@ class Pipeline:
         mix = str(params.get("audio_mix") or config.DEFAULT_AUDIO_MIX)
         if mix not in config.AUDIO_MIXES:
             mix = config.DEFAULT_AUDIO_MIX
+        # --- v0.6.0 options (unknown values fall back, never 500 a render) ---
+        captions_font = str(
+            params.get("captions_font") or config.DEFAULT_CAPTION_FONT
+        )
+        if captions_font not in config.CAPTION_FONTS:
+            captions_font = config.DEFAULT_CAPTION_FONT
+        captions_anim = str(
+            params.get("captions_anim") or config.DEFAULT_CAPTION_ANIM
+        )
+        if captions_anim not in config.CAPTION_ANIMS:
+            captions_anim = config.DEFAULT_CAPTION_ANIM
+        transition = str(params.get("transition") or config.DEFAULT_TRANSITION)
+        if transition not in config.TRANSITIONS:
+            transition = config.DEFAULT_TRANSITION
+        track_mode = str(params.get("track_mode") or config.DEFAULT_TRACK_MODE)
+        if track_mode not in config.TRACK_MODES:
+            track_mode = config.DEFAULT_TRACK_MODE
+        track_zoom = str(params.get("track_zoom") or config.DEFAULT_TRACK_ZOOM)
+        if track_zoom not in config.TRACK_ZOOMS:
+            track_zoom = config.DEFAULT_TRACK_ZOOM
+        language = str(params.get("language") or config.DEFAULT_LANGUAGE)
+        if language not in config.LANGUAGES:
+            language = config.DEFAULT_LANGUAGE
         width, height = config.OUTPUT_SIZES[fmt][quality]
         return {
             "style": style,
@@ -198,6 +222,13 @@ class Pipeline:
                 params.get("silence_min"), config.DEFAULT_SILENCE_MIN,
                 config.SILENCE_MIN_RANGE,
             ),
+            "captions_font": captions_font,
+            "captions_anim": captions_anim,
+            "transition": transition,
+            "track_mode": track_mode,
+            "track_zoom": track_zoom,
+            "language": language,
+            "quality_gate": bool(params.get("quality_gate", True)),
         }
 
 
@@ -221,7 +252,9 @@ class Pipeline:
             segments = demo.demo_segments(ep["id"])
         else:
             try:
-                segments, _source = youtube.get_transcript(ep["id"], ep["url"])
+                segments, _source = youtube.get_transcript(
+                    ep["id"], ep["url"], settings.get("language", "auto")
+                )
             except youtube.TranscriptUnavailable as exc:
                 raise RuntimeError(f"Transcript unavailable: {exc}") from exc
         if not segments:
@@ -249,6 +282,13 @@ class Pipeline:
             raise RuntimeError(
                 "No highlight moments found — try longer clip durations."
             )
+
+        # 2b) v0.6.0 quality gate — trim dead air off the edges, penalise
+        # windows that are mostly silence and re-rank, so the clips that get
+        # rendered are the ones worth watching.
+        moments = quality.refine_moments(
+            moments, segments, settings.get("quality_gate", True)
+        )
 
         # 3) source media -------------------------------------------------
         self._progress(self.store, job_id, "media", 0.35, "Preparing source media…")
@@ -409,6 +449,9 @@ class Pipeline:
             pos=settings["captions_pos"],
             box=settings["captions_box"],
             brand=settings.get("captions_brand", config.DEFAULT_CAPTION_BRAND),
+            font=settings.get("captions_font", config.DEFAULT_CAPTION_FONT),
+            anim=settings.get("captions_anim", config.DEFAULT_CAPTION_ANIM),
+            language=settings.get("language", config.DEFAULT_LANGUAGE),
         )
         clip_path = config.CLIPS_DIR / f"{clip_id}.mp4"
         render_clip(
@@ -430,6 +473,10 @@ class Pipeline:
             audio_mix=settings.get("audio_mix", config.DEFAULT_AUDIO_MIX),
             silence_noise=settings.get("silence_noise", config.DEFAULT_SILENCE_NOISE),
             silence_min=settings.get("silence_min", config.DEFAULT_SILENCE_MIN),
+            track_mode=settings.get("track_mode", config.DEFAULT_TRACK_MODE),
+            track_zoom=settings.get("track_zoom", config.DEFAULT_TRACK_ZOOM),
+            transition=settings.get("transition", config.DEFAULT_TRANSITION),
+            fontsdir=fonts.fontsdir(),
         )
 
         # 24 loudness bars for the card UI (empty list on any failure).
@@ -481,6 +528,13 @@ class Pipeline:
             "audio_mix": settings["audio_mix"],
             "silence_noise": settings["silence_noise"],
             "silence_min": settings["silence_min"],
+            "captions_font": settings["captions_font"],
+            "captions_anim": settings["captions_anim"],
+            "transition": settings["transition"],
+            "track_mode": settings["track_mode"],
+            "track_zoom": settings["track_zoom"],
+            "language": settings["language"],
+            "quality_gate": settings["quality_gate"],
         }
         return self.store.add_clip(
             {
@@ -509,6 +563,13 @@ class Pipeline:
                 "sync_beats": settings["sync_beats"],
                 "audio_mix": settings["audio_mix"],
                 "logo_box": settings["logo_box"],
+                "captions_font": settings["captions_font"],
+                "captions_anim": settings["captions_anim"],
+                "transition": settings["transition"],
+                "track_mode": settings["track_mode"],
+                "track_zoom": settings["track_zoom"],
+                "language": settings["language"],
+                "quality_gate": settings["quality_gate"],
                 "width": settings["width"],
                 "height": settings["height"],
                 "render": dict(render_opts),
