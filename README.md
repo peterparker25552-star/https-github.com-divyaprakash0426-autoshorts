@@ -16,6 +16,30 @@ playlist URL ──▶ yt-dlp ──▶ transcripts ──▶ highlight engine �
                  captions)                     questions · energy)   burned-in captions)
 ```
 
+## What's new in v0.6.4 — the ion logo, and a UI built around it
+
+- **A new mark.** The six-petal flower is replaced by the **chrome "ion Q"**: a thick
+  chrome crescent bowl lit by an electric-blue rim glow, crossed by a sharp blade tail,
+  wrapped in a thin tilted orbit and finished with a four-point spark, on deep space
+  black. `tools/make_logo.py` was rewritten to generate it — the SVG, the inline header
+  copy in `app.js` and all six PNGs come from **one** set of sampled curves, so the
+  vector and raster marks cannot drift apart.
+- **The UI now matches the logo.** Violet-and-cyan gives way to the mark's own palette:
+  ion blue `#1E5BFF`, lit ion `#4D8CFF`, ice chrome `#9FC9FF` and deep space black
+  `#01030B`. Every surface, panel, border, button gradient, focus ring, ambient glow,
+  slider, badge and scrollbar was re-derived from those, so the app reads as one piece
+  with the icon. The blue-tinted panel tints (rather than plain white alpha) are what
+  give it the cold, futuristic depth.
+- **Brand colours have one source of truth.** `config.BRAND_VIOLET/CYAN/BG` carry the new
+  values and the asset test now asserts `web/logo.svg` against *those constants* instead
+  of hard-coded hexes — the logo and the theme can never silently diverge again.
+- **Upgrade-safe.** The shell cache moves to `qyro-v0.6.4-ion-shell` and the PWA
+  `theme_color`/`background_color` follow the new black, so an installed icon cannot keep
+  showing the old purple splash.
+- **Colour only.** No pipeline, API, render or intro behaviour changed. The v6.3 spectrum
+  ident keeps its own rainbow ramp by design — it is the one place the full spectrum is
+  meant to appear. All 417 tests pass.
+
 ## What's new in v0.6.3 — the spectrum ident (and the ta-dum now actually plays)
 
 - **A glowing Q that expands into a spectrum.** The v6.2 ribbon reveal is replaced by a

@@ -57,17 +57,19 @@ def timeline() -> dict[str, float]:
 
 class VersionTests(unittest.TestCase):
     def test_version_bumped_to_063(self):
-        self.assertEqual(config.APP_VERSION, "0.6.3")
+        # 0.6.4 owns the file now; this suite defends the floor it shipped with
+        self.assertGreaterEqual(config.APP_VERSION, "0.6.3")
 
     def test_package_and_config_agree(self):
         import autoshorts
 
         self.assertEqual(autoshorts.__version__, config.APP_VERSION)
+        # the release notes for this suite's version must survive later bumps
         self.assertIn("v0.6.3", autoshorts.__doc__ or "")
 
     def test_service_worker_cache_moved_so_the_old_intro_cannot_persist(self):
         """A PWA that kept the v6.2 shell would keep the silent intro too."""
-        self.assertIn('const SHELL = "qyro-v0.6.3-spectrum-shell"', SW_JS)
+        self.assertRegex(SW_JS, r'const SHELL = "qyro-v0\.6\.[3-9]\S*-shell"')
         self.assertNotIn("0.6.2", SW_JS)
         self.assertIn('"/static/intro.js"', SW_JS)
 
