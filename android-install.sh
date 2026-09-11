@@ -3,7 +3,7 @@
 #   Qyro — ONE-CLICK installer for Android/Termux
 #
 #   Paste this single line into Termux:
-#   pkg update -y ; pkg install -y curl ; curl -sSL https://raw.githubusercontent.com/peterparker25552-star/https-github.com-divyaprakash0426-autoshorts/main/android-install.sh | bash
+#   pkg update -y ; pkg install -y curl ; curl -fsSL https://raw.githubusercontent.com/peterparker25552-star/https-github.com-divyaprakash0426-autoshorts/main/android-install.sh | bash
 # ============================================================
 set -e
 
@@ -15,7 +15,7 @@ if [ -z "$TERMUX_VERSION" ]; then
 fi
 
 REF="${AUTOSHORTS_REF:-main}"
-REPO="https://github.com/peterparker25552-star/https-github.com-divyaprakash0426-autoshorts.git"
+REPO="${AUTOSHORTS_REPO:-https://github.com/peterparker25552-star/https-github.com-divyaprakash0426-autoshorts.git}"
 
 echo
 echo ">>> [1/4] Installing Python, ffmpeg and git (5-10 minutes)..."
@@ -25,7 +25,7 @@ pkg install -y python ffmpeg git
 echo
 echo ">>> [2/4] Downloading Qyro..."
 rm -rf ~/autoshorts
-git clone -q -b "$REF" "$REPO" ~/autoshorts
+git clone -q --depth 1 -b "$REF" "$REPO" ~/autoshorts
 
 echo
 echo ">>> [3/4] Installing Qyro dependencies (quick — pure Python only)..."

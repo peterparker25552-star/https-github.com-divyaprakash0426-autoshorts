@@ -65,8 +65,10 @@ Copy this **single line**, paste it into Termux (long-press → **Paste**), and
 press Enter:
 
 ```
-pkg update -y ; pkg install -y curl ; curl -sSL https://raw.githubusercontent.com/peterparker25552-star/https-github.com-divyaprakash0426-autoshorts/main/android-install.sh | bash
+pkg update -y ; pkg install -y curl ; curl -fsSL https://raw.githubusercontent.com/peterparker25552-star/https-github.com-divyaprakash0426-autoshorts/main/android-install.sh | bash
 ```
+
+> **Important:** use the raw URL above exactly. The upstream `divyaprakash0426/autoshorts` repository does not contain `android-install.sh` on its `main` branch, so using `https://raw.githubusercontent.com/divyaprakash0426/autoshorts/main/android-install.sh` returns 404 and Bash reports a syntax error. `-f` makes curl stop instead of passing the 404 page to Bash.
 
 It will ask `Do you want to continue? [Y/n]` a few times — just press **Enter**
 each time (the default is yes).

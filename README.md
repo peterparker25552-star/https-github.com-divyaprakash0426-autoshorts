@@ -188,8 +188,10 @@ It opens at <http://localhost:8000> — keep the black window open while using i
 2. Easiest — paste this one line into Termux and wait:
 
 ```bash
-pkg update -y ; pkg install -y curl ; curl -sSL https://raw.githubusercontent.com/peterparker25552-star/https-github.com-divyaprakash0426-autoshorts/main/android-install.sh | bash
+pkg update -y ; pkg install -y curl ; curl -fsSL https://raw.githubusercontent.com/peterparker25552-star/https-github.com-divyaprakash0426-autoshorts/main/android-install.sh | bash
 ```
+
+> **Important:** use the raw URL above exactly. The upstream `divyaprakash0426/autoshorts` repository does not contain `android-install.sh` on its `main` branch, so using `https://raw.githubusercontent.com/divyaprakash0426/autoshorts/main/android-install.sh` returns 404 and Bash reports a syntax error. `-f` makes curl stop instead of passing the 404 page to Bash.
 
 It installs everything, then start the app any time with
 `bash ~/start-autoshorts.sh`.
