@@ -13,7 +13,11 @@ v0.6.1: the tracker follows the *speaker* (voice-correlated motion scoring,
 speaker hand-offs, most-present fallback), shorts are longer (25-90 s) and
 always end where the speaker stops, and the free AI engine's defaults,
 timeouts and retries were fixed so "AI unavailable during render" only shows
-up when the engine genuinely cannot answer."""
+up when the engine genuinely cannot answer.
 
-__version__ = "0.6.1"
+v0.6.2: new Claude+Grok-inspired logo, captions on/off toggle, flicker-free
+Generate buttons (no animation thrash during fastPoll), and Netflix-style
+intro animation + ta-dum sound on first open."""
+
+__version__ = "0.6.2"
 APP_NAME = "Qyro"

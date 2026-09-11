@@ -123,6 +123,37 @@ let state = {
   cutter: null,
 };
 let pollTimer = null;
+let lastEpisodeSig = "";
+
+function episodeSig(list) {
+  return (list || []).map((e) => `${e.id}:${e.status || "new"}:${e.clip_count || 0}:${e.error || ""}`).join("|");
+}
+function patchEpisodeProgress() {
+  const jobs = state.data?.jobs || [];
+  const eps = state.data?.episodes || [];
+  let needFull = false;
+  eps.forEach((ep) => {
+    const card = document.querySelector(`.episode[data-id="${ep.id}"]`);
+    if (!card) { needFull = true; return; }
+    const job = jobs.find((j) => j.episode_id === ep.id);
+    const status = ep.status || "new";
+    const badge = card.querySelector(".badge.status-new, .badge.status-processing, .badge.status-done, .badge.status-error, .badge[class*='status-']");
+    // If error newly appeared or status changed from processing to done, need full
+    if (ep.error && !card.querySelector(".stepmsg.error")) needFull = true;
+    if (status === "processing" && job) {
+      const pct = Math.round((job.progress || 0) * 100);
+      const prog = card.querySelector(".progressbar .fill");
+      if (prog) prog.style.width = `${pct}%`;
+      else needFull = true;
+      const step = card.querySelector(".stepmsg:not(.error)");
+      if (step) step.textContent = job.message || job.step || "working…";
+    } else if (!card.querySelector(".progressbar") === false && status !== "processing") {
+      // was processing now not -> need full
+      if (card.querySelector(".progressbar")) needFull = true;
+    }
+  });
+  return !needFull;
+}
 
 // Server-provided defaults, a preset overlay the user applied, and per-card
 // picks. Polling re-renders the cards but never touches the last two, so the
@@ -138,6 +169,7 @@ let baseDefaults = {
   captions: "classic",
   captions_pos: "standard",
   captions_box: false,
+  captions_enabled: true, // v6.2 toggle
   captions_brand: "none",
   speed: 1.0,
   progress: false,
@@ -196,27 +228,33 @@ function fmtBytes(bytes) {
 }
 
 // ------------------------------------------------------------------ brand
-/* Qyro mark: a "Q" whose tail is a play triangle cut out of the ring.
+/* Qyro v6.2 mark — Claude-inspired soft 6-point star (organic, friendly)
+   + Grok-inspired sharp play tail, violet->cyan gradient matching the UI.
    One geometry, inlined so the header needs zero image requests. */
 const LOGO_SVG = `
 <svg viewBox="0 0 64 64" role="img" aria-label="Qyro" focusable="false">
   <defs>
-    <linearGradient id="qg" x1="6" y1="4" x2="58" y2="60" gradientUnits="userSpaceOnUse">
-      <stop offset="0" stop-color="#7C3AED"/>
-      <stop offset="0.55" stop-color="#9D5CF5"/>
-      <stop offset="1" stop-color="#22D3EE"/>
+    <linearGradient id="qg" x1="8" y1="6" x2="56" y2="58" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#7C3AED"/>
+      <stop offset="0.52" stop-color="#A855F7"/>
+      <stop offset="1%" stop-color="#22D3EE"/>
+    </linearGradient>
+    <linearGradient id="qg2" x1="34" y1="38" x2="58" y2="62" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#A855F7"/>
+      <stop offset="1%" stop-color="#22D3EE"/>
     </linearGradient>
     <mask id="qcut">
       <rect width="64" height="64" fill="#fff"/>
-      <path d="M29.00 31.00 L62.00 47.00 L33.50 68.50 Z" fill="#000"/>
+      <path d="M30.5 32.5 L62.5 46.8 L34.2 68.5 Z" fill="#000"/>
     </mask>
   </defs>
-  <rect width="64" height="64" fill="#0A0A0F"/>
+  <rect width="64" height="64" rx="14" fill="#0A0A0F"/>
   <g mask="url(#qcut)">
-    <path fill="url(#qg)" d="M6.20 27.00a20.80 20.80 0 1 0 41.60 0a20.80 20.80 0 1 0 -41.60 0 Z"/>
-    <path fill="#0A0A0F" d="M15.20 27.00a11.80 11.80 0 1 0 23.60 0a11.80 11.80 0 1 0 -23.60 0 Z"/>
+    <path fill="url(#qg)" d="M 25.69 11.98 Q 28.00 8.00 30.31 11.98 L 31.19 13.49 Q 33.50 17.47 38.10 17.48 L 39.85 17.49 Q 44.45 17.50 42.16 21.49 L 41.29 23.01 Q 39.00 27.00 41.29 30.99 L 42.16 32.51 Q 44.45 36.50 39.85 36.51 L 38.10 36.52 Q 33.50 36.53 31.19 40.51 L 30.31 42.02 Q 28.00 46.00 25.69 42.02 L 24.81 40.51 Q 22.50 36.53 17.90 36.52 L 16.15 36.51 Q 11.55 36.50 13.84 32.51 L 14.71 30.99 Q 17.00 27.00 14.71 23.01 L 13.84 21.49 Q 11.55 17.50 16.15 17.49 L 17.90 17.48 Q 22.50 17.47 24.81 13.49 Z"/>
+    <circle cx="28" cy="27" r="10.2" fill="#0A0A0F"/>
   </g>
-  <path d="M36.00 38.50 L55.00 50.50 L36.00 62.50 Z" fill="url(#qg)"/>
+  <path d="M35.2 38.8 L57.2 51.0 L35.2 63.2 Z" fill="url(#qg2)"/>
+  <path d="M47 12.6 L47.85 14.55 L49.8 15.4 L47.85 16.25 L47 18.2 L46.15 16.25 L44.2 15.4 L46.15 14.55 Z" fill="#22D3EE" opacity="0.95"/>
 </svg>`;
 
 /* Icon set: every glyph in the UI is inline SVG — no emoji, no font, no
@@ -344,6 +382,7 @@ function readCardOpts(card) {
     captions: pick(".opt-captions", baseDefaults.captions),
     captions_pos: pick(".opt-cap-pos", baseDefaults.captions_pos),
     captions_box: flag(".opt-cap-box"),
+    captions_enabled: !card.querySelector(".opt-captions-enabled") || flag(".opt-captions-enabled"),
     speed,
     progress: flag(".opt-progress"),
     silence: flag(".opt-silence"),
@@ -511,9 +550,10 @@ function renderAdvOpts(ep, opts) {
   return `<details class="advopts"${open}>
     <summary>${ic("sliders")} Fine-tune</summary>
     <div class="advgrid">
-      <label>Captions <select class="opt-captions">${chosen(CAPTION_OPTIONS, opts.captions)}</select></label>
-      <label>Cap position <select class="opt-cap-pos">${chosen(CAPTION_POS_OPTIONS, opts.captions_pos)}</select></label>
-      <label class="toggle" title="Opaque box behind the words">${ic("box")}<input class="opt-cap-box" type="checkbox"${checkedAttr(opts.captions_box)}> caption box</label>
+      <label class="toggle" title="Turn captions on or off"><span class="ic">${icon("captions")}</span><input class="opt-captions-enabled" type="checkbox"${checkedAttr(opts.captions_enabled !== false)}> captions on</label>
+      <label>Captions <select class="opt-captions"${opts.captions_enabled === false ? " disabled" : ""}>${chosen(CAPTION_OPTIONS, opts.captions)}</select></label>
+      <label>Cap position <select class="opt-cap-pos"${opts.captions_enabled === false ? " disabled" : ""}>${chosen(CAPTION_POS_OPTIONS, opts.captions_pos)}</select></label>
+      <label class="toggle" title="Opaque box behind the words">${ic("box")}<input class="opt-cap-box" type="checkbox"${checkedAttr(opts.captions_box)}${opts.captions_enabled === false ? " disabled" : ""}> caption box</label>
       <label title="Follow the speaker instead of cropping the middle of a wide shot">Follow person <select class="opt-track-mode">${chosen(catalog("track_modes"), opts.track_mode)}</select></label>
       <label title="How much headroom to leave around the person">Framing <select class="opt-track-zoom"${opts.track_mode === "off" ? " disabled" : ""}>${chosen(catalog("track_zooms"), opts.track_zoom)}</select></label>
       <label>Caption font <select class="opt-cap-font">${chosen(catalog("fonts"), opts.captions_font)}</select></label>
@@ -568,6 +608,7 @@ function renderEpisodes() {
   const list = $("#episodeList");
 
   if (!allEpisodes.length) {
+    lastEpisodeSig = "";
     list.innerHTML = `<div class="empty" style="padding:34px 16px">
       <p>Load a YouTube playlist or single video above, or <a href="#" onclick="loadDemo();return false">try the demo</a>.</p>
     </div>`;
@@ -578,6 +619,14 @@ function renderEpisodes() {
     return;
   }
 
+  const sig = episodeSig(allEpisodes) + "|q:" + query;
+  const activeInside = document.activeElement && list.contains(document.activeElement);
+  if (sig === lastEpisodeSig && (activeInside || document.querySelector("#episodeList .progressbar"))) {
+    if (patchEpisodeProgress()) return;
+  }
+  lastEpisodeSig = sig;
+  const prevIds = new Set(Array.from(list.querySelectorAll(".episode")).map((el) => el.dataset.id));
+
   list.innerHTML = episodes.map((ep) => {
     const status = ep.status || "new";
     const job = (state.data.jobs || []).find((item) => item.episode_id === ep.id);
@@ -586,7 +635,7 @@ function renderEpisodes() {
     const opts = optsFor(ep.id);
     const disabled = busy ? "disabled" : "";
     return `
-    <div class="episode" data-id="${ep.id}">
+    <div class="episode${prevIds.has(ep.id) ? "" : " is-new"}" data-id="${ep.id}">
       <div class="title">${esc(ep.title)}</div>
       <div class="meta">
         <span class="badge ${ep.source === "demo" ? "demo" : "yt"}">${ep.source === "demo" ? "demo" : "youtube"}</span>
@@ -804,11 +853,19 @@ function renderOptsPayload(opts) {
     captions: opts.captions,
     captions_pos: opts.captions_pos || "standard",
     captions_box: !!opts.captions_box,
+    captions_enabled: opts.captions_enabled !== false,
     speed: Number(opts.speed) || 1,
     progress: !!opts.progress,
     silence: !!opts.silence,
     loud: !!opts.loud,
     captions_brand: opts.captions_brand || "none",
+    captions_font: opts.captions_font || "auto",
+    captions_anim: opts.captions_anim || "fade",
+    transition: opts.transition || "fade",
+    track_mode: opts.track_mode || "auto",
+    track_zoom: opts.track_zoom || "auto",
+    language: opts.language || "auto",
+    quality_gate: opts.quality_gate !== false,
     sync_beats: !!opts.sync_beats,
     audio_mix: opts.audio_mix || "duck",
     logo_box: logoBoxFrom(opts),
@@ -1032,6 +1089,7 @@ function rerenderClip(id) {
       <label>Style <select id="rr-style">${chosen(STYLE_OPTIONS, opts.style)}</select></label>
       <label>Quality <select id="rr-quality">${chosen(QUALITY_OPTIONS, opts.quality)}</select></label>
       <label>Format <select id="rr-format">${chosen(FORMAT_OPTIONS, opts.format)}</select></label>
+      <label class="toggle"><input id="rr-cap-enabled" type="checkbox"${checkedAttr(opts.captions_enabled !== false)}> captions on</label>
       <label>Captions <select id="rr-captions">${chosen(CAPTION_OPTIONS, opts.captions)}</select></label>
       <label>Cap position <select id="rr-cappos">${chosen(CAPTION_POS_OPTIONS, opts.captions_pos || "standard")}</select></label>
       <label class="toggle"><input id="rr-capbox" type="checkbox"${checkedAttr(opts.captions_box)}> caption box</label>
@@ -1063,6 +1121,7 @@ function rerenderClip(id) {
           style: $("#rr-style").value,
           quality: $("#rr-quality").value,
           format: $("#rr-format").value,
+          captions_enabled: $("#rr-cap-enabled").checked,
           captions: $("#rr-captions").value,
           captions_pos: $("#rr-cappos").value,
           captions_box: $("#rr-capbox").checked,
@@ -1990,7 +2049,7 @@ document.addEventListener("change", (event) => {
   if (card) rememberCardOpts(card);
   // Selects that change what the card *shows* (brand swatch, logo box,
   // quality warning) re-render the list; the open/closed state survives.
-  if (card && /^(opt-brand|opt-logo|opt-logo-size|opt-quality)$/.test(
+  if (card && /^(opt-brand|opt-logo|opt-logo-size|opt-quality|opt-captions-enabled)$/.test(
       (event.target.className || "").split(/\s+/).join("|"))) renderEpisodes();
 });
 
@@ -2034,6 +2093,83 @@ document.addEventListener("keydown", (event) => {
   if (event.key === "Escape") closeModal();
 });
 
+function playIntroSound() {
+  try {
+    const ctx = new (window.AudioContext || window.webkitAudioContext)();
+    const now = ctx.currentTime;
+    // Netflix ta-dum: low hit + brass swell
+    const master = ctx.createGain();
+    master.gain.setValueAtTime(0.0, now);
+    master.gain.linearRampToValueAtTime(0.85, now + 0.06);
+    master.gain.exponentialRampToValueAtTime(0.001, now + 2.2);
+    master.connect(ctx.destination);
+    // low boom
+    const o1 = ctx.createOscillator();
+    o1.type = "sine";
+    o1.frequency.setValueAtTime(110, now);
+    o1.frequency.exponentialRampToValueAtTime(52, now + 0.45);
+    const g1 = ctx.createGain();
+    g1.gain.setValueAtTime(0.9, now);
+    g1.gain.exponentialRampToValueAtTime(0.001, now + 1.1);
+    o1.connect(g1).connect(master);
+    o1.start(now); o1.stop(now + 1.2);
+    // mid
+    const o2 = ctx.createOscillator();
+    o2.type = "triangle";
+    o2.frequency.setValueAtTime(220, now);
+    o2.frequency.linearRampToValueAtTime(165, now + 0.7);
+    const g2 = ctx.createGain();
+    g2.gain.setValueAtTime(0.0, now);
+    g2.gain.linearRampToValueAtTime(0.35, now + 0.12);
+    g2.gain.exponentialRampToValueAtTime(0.001, now + 1.6);
+    o2.connect(g2).connect(master);
+    o2.start(now+0.05); o2.stop(now+1.7);
+    // high shimmer
+    const o3 = ctx.createOscillator();
+    o3.type = "sine";
+    o3.frequency.setValueAtTime(880, now);
+    o3.frequency.exponentialRampToValueAtTime(660, now + 1.2);
+    const g3 = ctx.createGain();
+    g3.gain.setValueAtTime(0.0, now);
+    g3.gain.linearRampToValueAtTime(0.18, now + 0.25);
+    g3.gain.exponentialRampToValueAtTime(0.001, now + 2.0);
+    o3.connect(g3).connect(master);
+    o3.start(now+0.15); o3.stop(now+2.1);
+  } catch(e) {}
+}
+
+function initIntro() {
+  const overlay = document.getElementById("introOverlay");
+  if (!overlay) return;
+  // show once per session (localStorage flag expires on browser close if sessionStorage used, but spec says once per session)
+  const seen = sessionStorage.getItem("qyro.introSeen");
+  if (seen) {
+    overlay.classList.add("dismissed");
+    return;
+  }
+  let dismissed = false;
+  const dismiss = () => {
+    if (dismissed) return;
+    dismissed = true;
+    overlay.classList.add("dismissed");
+    sessionStorage.setItem("qyro.introSeen", "1");
+    setTimeout(() => overlay.remove(), 700);
+  };
+  overlay.addEventListener("click", () => { playIntroSound(); dismiss(); });
+  // auto-dismiss after 2.4s
+  setTimeout(dismiss, 2400);
+  // attempt sound on first interaction if allowed, else on click
+  const trySound = () => {
+    playIntroSound();
+    document.removeEventListener("click", trySound);
+    document.removeEventListener("keydown", trySound);
+  };
+  document.addEventListener("click", trySound, { once: true });
+  document.addEventListener("keydown", trySound, { once: true });
+  // also try immediately (may be blocked until interaction, but we try)
+  try { playIntroSound(); } catch(e) {}
+}
+
 window.addEventListener("DOMContentLoaded", async () => {
   $("#loadPlaylist").addEventListener("click", loadPlaylist);
   $("#loadDemo").addEventListener("click", loadDemo);
@@ -2054,6 +2190,7 @@ window.addEventListener("DOMContentLoaded", async () => {
   $("#zipBtn").addEventListener("click", downloadZip);
   $("#toolsBtn").addEventListener("click", openTools);
   $("#settingsBtn").addEventListener("click", openSettings);
+  initIntro();
   hydrateIcons();
   if ("serviceWorker" in navigator && location.protocol.startsWith("http")) {
     navigator.serviceWorker.register("/sw.js").catch(() => {});

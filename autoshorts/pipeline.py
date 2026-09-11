@@ -205,6 +205,7 @@ class Pipeline:
             "captions": captions,
             "captions_pos": captions_pos,
             "captions_box": bool(params.get("captions_box", False)),
+            "captions_enabled": bool(params.get("captions_enabled", config.DEFAULT_CAPTIONS_ENABLED)),
             "captions_brand": brand,
             "speed": speed,
             "progress": bool(params.get("progress", False)),
@@ -462,22 +463,26 @@ class Pipeline:
         """Render and persist one automatic or manual highlight."""
         clip_id = f"{ep['id'][:24]}-{uuid.uuid4().hex[:6]}"
         window_segments = segments_for_window(segments, moment.start, moment.end)
-        ass_path = make_ass(
-            window_segments,
-            moment.start,
-            moment.end,
-            config.SUBS_DIR / f"{clip_id}.ass",
-            play_w=settings["width"],
-            play_h=settings["height"],
-            caption_style=settings["captions"],
-            speed=settings["speed"],
-            pos=settings["captions_pos"],
-            box=settings["captions_box"],
-            brand=settings.get("captions_brand", config.DEFAULT_CAPTION_BRAND),
-            font=settings.get("captions_font", config.DEFAULT_CAPTION_FONT),
-            anim=settings.get("captions_anim", config.DEFAULT_CAPTION_ANIM),
-            language=settings.get("language", config.DEFAULT_LANGUAGE),
-        )
+        # v6.2 captions toggle — when disabled we skip ASS generation entirely
+        if settings.get("captions_enabled", config.DEFAULT_CAPTIONS_ENABLED):
+            ass_path = make_ass(
+                window_segments,
+                moment.start,
+                moment.end,
+                config.SUBS_DIR / f"{clip_id}.ass",
+                play_w=settings["width"],
+                play_h=settings["height"],
+                caption_style=settings["captions"],
+                speed=settings["speed"],
+                pos=settings["captions_pos"],
+                box=settings["captions_box"],
+                brand=settings.get("captions_brand", config.DEFAULT_CAPTION_BRAND),
+                font=settings.get("captions_font", config.DEFAULT_CAPTION_FONT),
+                anim=settings.get("captions_anim", config.DEFAULT_CAPTION_ANIM),
+                language=settings.get("language", config.DEFAULT_LANGUAGE),
+            )
+        else:
+            ass_path = None
         clip_path = config.CLIPS_DIR / f"{clip_id}.mp4"
         render_clip(
             media,
@@ -542,6 +547,7 @@ class Pipeline:
             "captions": settings["captions"],
             "captions_pos": settings["captions_pos"],
             "captions_box": settings["captions_box"],
+            "captions_enabled": settings.get("captions_enabled", config.DEFAULT_CAPTIONS_ENABLED),
             "captions_brand": settings["captions_brand"],
             "speed": settings["speed"],
             "progress": settings["progress"],
@@ -579,6 +585,7 @@ class Pipeline:
                 "captions": settings["captions"],
                 "captions_pos": settings["captions_pos"],
                 "captions_box": settings["captions_box"],
+                "captions_enabled": settings.get("captions_enabled", config.DEFAULT_CAPTIONS_ENABLED),
                 "captions_brand": settings["captions_brand"],
                 "quality": settings["quality"],
                 "speed": settings["speed"],

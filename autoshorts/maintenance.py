@@ -32,6 +32,7 @@ RENDER_DEFAULTS = {
     "captions": config.DEFAULT_CAPTIONS,
     "captions_pos": config.DEFAULT_CAPTIONS_POS,
     "captions_box": config.DEFAULT_CAPTIONS_BOX,
+    "captions_enabled": config.DEFAULT_CAPTIONS_ENABLED,  # v6.2 on/off toggle
     "speed": config.DEFAULT_SPEED,
     "progress": False,
     "silence": False,
@@ -55,7 +56,7 @@ RENDER_DEFAULTS = {
 }
 
 _FLAG_KEYS = ("progress", "silence", "loud", "captions_box", "sync_beats",
-              "quality_gate")
+              "quality_gate", "captions_enabled")
 _CHOICES = {
     "style": config.STYLES,
     "quality": config.QUALITIES,
