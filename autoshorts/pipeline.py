@@ -10,6 +10,7 @@ import queue
 import threading
 import traceback
 import uuid
+from dataclasses import replace
 from pathlib import Path
 
 from . import (audioswap, beats, config, demo, engine, fonts, highlights,
@@ -295,7 +296,9 @@ class Pipeline:
         media = self._prepare_media(ep)
 
         # 3b) T3 beat sync - snap the chosen windows onto the loudness peaks.
-        moments = self._snap_moments(ep, media, moments, settings, job_id)
+        moments = self._snap_moments(
+            ep, media, moments, settings, job_id, segments
+        )
 
         # 4) render clips -------------------------------------------------
         total = len(moments)
@@ -356,20 +359,37 @@ class Pipeline:
         self._progress(self.store, job_id, "render", 0.45, "Rendering manual clip…")
         # 3b) T3 beat sync also honours a manual cut - the range is the user's,
         # the boundary just lands on the nearest downbeat.
-        snapped = self._snap_moments(ep, media, [moment], settings, job_id)
+        snapped = self._snap_moments(ep, media, [moment], settings, job_id, segments)
         moment = snapped[0] if snapped else moment
+        if segments and not settings.get("sync_beats"):
+            # no beat snap ran: still end on the speaker's stop, not on the
+            # user's raw timestamp — the tail only ever *adds* air
+            new_end = quality.tail_pad(
+                segments, moment.start, moment.end,
+                hard_end=float(ep.get("duration") or 0) or None,
+            )
+            if new_end > moment.end:
+                moment = replace(moment, end=new_end)
 
         # 4) render -------------------------------------------------------
         self._render_one(ep, media, segments, moment, settings, profile=profile)
         self._progress(self.store, job_id, "done", 1.0, "Generated manual clip")
 
     # ------------------------------------------------------------------
-    def _snap_moments(self, ep, media, moments, settings: dict, job_id: str) -> list:
+    def _snap_moments(
+        self, ep, media, moments, settings: dict, job_id: str,
+        segments: list[Segment] | None = None,
+    ) -> list:
         """Move each window boundary to the nearest beat (T3).
 
         Fully optional and fully safe: no toggle, no media, no beats or any
         analysis error returns the moments untouched, so a render never depends
         on beat detection succeeding.
+
+        v0.6.1: after the snap, both boundaries are re-aligned to the
+        transcript (``quality.finalize_window``) — a beat that lands in the
+        middle of a word must not chop a line in half, and the tail still gets
+        its breath of air after the last spoken word.
         """
         if not settings.get("sync_beats") or not moments:
             return moments
@@ -380,6 +400,7 @@ class Pipeline:
         markers = info.get("beats") or []
         if not markers:
             return moments
+        hard_end = float(ep.get("duration") or 0) or None
         out = []
         moved = 0
         for moment in moments:
@@ -388,6 +409,10 @@ class Pipeline:
                 out.append(moment)
                 continue
             moved += 1
+            if segments:
+                start, end = quality.finalize_window(
+                    segments, start, end, hard_end=hard_end
+                )
             out.append(highlights.Highlight(
                 start=start,
                 end=end,

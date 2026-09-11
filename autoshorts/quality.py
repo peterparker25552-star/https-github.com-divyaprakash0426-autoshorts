@@ -115,6 +115,125 @@ def grade(
     return round(multiplier, 4), reasons
 
 
+def next_gap_after(
+    segments: list[Segment], end: float
+) -> tuple[float, float] | None:
+    """The silence gap following ``end``, as ``(gap_start, next_word_start)``.
+
+    ``None`` when every later caption line starts before/at ``end`` (continuous
+    speech) or there is no later line (end of the source = infinite gap).
+    """
+    end = float(end)
+    following = [
+        float(s.start) for s in (segments or [])
+        if float(s.start) > end - 1e-6 and float(s.end) > end + 1e-6
+    ]
+    if not following:
+        return None
+    nxt = min(following)
+    return end, nxt
+
+
+def tail_pad(
+    segments: list[Segment],
+    start: float,
+    end: float,
+    tail: float = config.END_TAIL_SECONDS,
+    grow_limit: float = config.END_TAIL_MAX,
+    min_tail: float = config.END_TAIL_MIN,
+    hard_end: float | None = None,
+) -> float:
+    """A new end that leaves ``tail`` seconds of air after the last word.
+
+    The old cut stopped the instant the last word finished, clipping the
+    speaker's final syllable decay. The end now slides into the silence after
+    the last line — most of the way to the next spoken word, never *into* it,
+    and never growing the window by more than ``grow_limit``. ``hard_end``
+    (the source duration) clamps the extension at the end of the file.
+    """
+    start = float(start)
+    end = float(end)
+    gap = next_gap_after(segments, end)
+    wanted = max(float(min_tail), float(tail))
+    if gap is None:
+        # nothing is spoken later: take the full tail, clamped to the source
+        new_end = end + wanted
+        if hard_end:
+            new_end = min(new_end, max(end, float(hard_end)))
+        return round(min(new_end, end + float(grow_limit)), 3)
+    gap_start, next_word = gap
+    room = max(0.0, next_word - gap_start)
+    if room <= 0.02:
+        # the next line starts immediately (overlapping auto-captions): leave
+        # the minimum air only, and never overlap the next word
+        new_end = min(gap_start + float(min_tail), next_word - 0.02)
+    else:
+        # sit ~60% into the silence so the final word decays naturally
+        new_end = gap_start + min(wanted, max(float(min_tail), 0.6 * room))
+        new_end = min(new_end, next_word - 0.02)
+    new_end = min(new_end, end + float(grow_limit))
+    return round(max(end, new_end), 3)
+
+
+def finalize_window(
+    segments: list[Segment],
+    start: float,
+    end: float,
+    max_shift: float = config.BOUNDARY_MAX_SHIFT,
+    hard_end: float | None = None,
+) -> tuple[float, float]:
+    """Repair boundaries that land mid-word (after a beat snap or a manual cut).
+
+    * an ``end`` inside speech slides forward to finish the thought (bounded by
+      ``max_shift``), or back to the previous pause when the rest of the line
+      is too long — either way the last word on screen is a *whole* word;
+    * a ``start`` inside speech pulls back to the word's beginning, so the
+      first word is whole too.
+    """
+    start = float(start)
+    end = float(end)
+    shift = max(0.0, float(max_shift))
+    swallow = max(shift, float(config.BOUNDARY_SWALLOW_LIMIT))
+    inside_end = [
+        s for s in (segments or [])
+        if float(s.start) < end - 0.05 and float(s.end) > end + 0.05
+    ]
+    if inside_end:
+        seg = inside_end[0]
+        rest = float(seg.end) - end
+        if rest <= swallow:
+            # finish the word (and the line) the cut would have chopped
+            new_end = tail_pad(
+                segments, start, float(seg.end),
+                grow_limit=rest + config.END_TAIL_MAX, hard_end=hard_end,
+            )
+            end = max(end, min(new_end, end + rest + config.END_TAIL_MAX))
+        else:
+            # too much speech left to swallow: back up to the last pause
+            previous = [
+                s2 for s2 in (segments or [])
+                if float(s2.end) <= end - 0.05
+            ]
+            if previous:
+                stop = max(float(s2.end) for s2 in previous)
+                if end - stop <= swallow:
+                    end = stop + config.END_TAIL_MIN
+    inside_start = [
+        s for s in (segments or [])
+        if float(s.start) < start - 0.05 and float(s.end) > start + 0.05
+    ]
+    if inside_start:
+        seg = inside_start[0]
+        back = start - float(seg.start)
+        if back <= shift:
+            start = round(max(0.0, float(seg.start) - 0.05), 3)
+    if hard_end:
+        end = min(end, float(hard_end))
+        if end - start < 3.0:
+            start = max(0.0, end - 3.0)
+    return round(start, 3), round(end, 3)
+
+
 def refine_moments(
     moments: list[Highlight],
     segments: list[Segment],
@@ -134,6 +253,11 @@ def refine_moments(
     out: list[Highlight] = []
     for moment in moments:
         start, end = trim_edges(segments, moment.start, moment.end)
+        # v0.6.1: breathe after the last word instead of cutting it mid-decay
+        end = tail_pad(
+            segments, start, end,
+            grow_limit=config.END_TAIL_MAX + max(0.0, moment.end - end),
+        )
         multiplier, reasons = grade(segments, start, end)
         kept = [
             sentence for sentence in (moment.sentences or [])

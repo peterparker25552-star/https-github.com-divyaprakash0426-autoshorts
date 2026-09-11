@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import json
 import re
+import time
 import urllib.error
 import urllib.request
 
@@ -141,33 +142,59 @@ def _scrub(text: str) -> str:
     return cleaned[:300]
 
 
-def _post_json(url: str, payload: dict, headers: dict, timeout: float) -> dict | None:
+_TRANSIENT_HTTP = (429, 500, 502, 503, 504)
+
+
+def _post_json(url: str, payload: dict, headers: dict, timeout: float,
+               retries: int | None = None) -> dict | None:
+    """POST once (plus retries on transient failures) and parse the reply.
+
+    Timeouts, connection resets and 429/5xx responses are retried — a single
+    cold-start blip should never demote a render to the offline pack. A
+    non-transient HTTP error (401/403/404 …) fails immediately: retrying a bad
+    key or a retired model would only waste the render's time.
+    """
+    if retries is None:
+        retries = config.AI_RETRIES
     request = urllib.request.Request(
         url,
         data=json.dumps(payload).encode("utf-8"),
         method="POST",
         headers={"Content-Type": "application/json", **headers},
     )
-    try:
-        with urllib.request.urlopen(request, timeout=timeout) as response:
-            status = getattr(response, "status", 200)
-            body = response.read().decode("utf-8", "replace")
-    except urllib.error.HTTPError as exc:
-        detail = ""
+    attempts = max(0, int(retries)) + 1
+    last_error: dict | None = None
+    for attempt in range(attempts):
         try:
-            detail = exc.read().decode("utf-8", "replace")[:200]
+            with urllib.request.urlopen(request, timeout=timeout) as response:
+                status = getattr(response, "status", 200)
+                body = response.read().decode("utf-8", "replace")
+        except urllib.error.HTTPError as exc:
+            detail = ""
+            try:
+                detail = exc.read().decode("utf-8", "replace")[:200]
+            except Exception:
+                pass
+            last_error = {"__error__": f"HTTP {exc.code} {_scrub(detail)}"}
+            if exc.code in _TRANSIENT_HTTP and attempt + 1 < attempts:
+                time.sleep(config.AI_RETRY_BACKOFF)
+                continue
+            return last_error
+        except Exception as exc:
+            # timeouts / DNS / refused connections are worth one more try
+            last_error = {"__error__": _scrub(str(exc)) or "network error"}
+            if attempt + 1 < attempts:
+                time.sleep(config.AI_RETRY_BACKOFF)
+                continue
+            return last_error
+        if status != 200:
+            return {"__error__": f"HTTP {status}"}
+        try:
+            parsed = json.loads(body)
         except Exception:
-            pass
-        return {"__error__": f"HTTP {exc.code} {_scrub(detail)}"}
-    except Exception as exc:
-        return {"__error__": _scrub(str(exc)) or "network error"}
-    if status != 200:
-        return {"__error__": f"HTTP {status}"}
-    try:
-        parsed = json.loads(body)
-    except Exception:
-        return {"__error__": "unreadable reply"}
-    return parsed if isinstance(parsed, dict) else {"__error__": "unreadable reply"}
+            return {"__error__": "unreadable reply"}
+        return parsed if isinstance(parsed, dict) else {"__error__": "unreadable reply"}
+    return last_error
 
 
 def _chat_text(payload: dict) -> str | None:
@@ -232,7 +259,14 @@ def ask_json(system: str, user: str, settings: dict | None,
             payload = {
                 "systemInstruction": {"parts": [{"text": system}]},
                 "contents": [{"role": "user", "parts": [{"text": user}]}],
-                "generationConfig": {"temperature": 0.85, "maxOutputTokens": 1024},
+                "generationConfig": {
+                    "temperature": 0.85,
+                    "maxOutputTokens": 2048,
+                    # 2.5-class models "think" by default; left on, the thinking
+                    # tokens eat the whole output budget and the reply arrives
+                    # empty. These tasks don't need thinking — switch it off.
+                    "thinkingConfig": {"thinkingBudget": 0},
+                },
             }
             headers = {"x-goog-api-key": key}
         else:
@@ -403,16 +437,22 @@ def polish_pack(pack: dict, context: str = "", settings: dict | None = None,
 
 
 def refine_pack(pack: dict, context: str, settings: dict | None = None,
-                timeout: float = 12.0) -> tuple[dict, str, str]:
+                timeout: float = config.AI_RENDER_TIMEOUT) -> tuple[dict, str, str]:
     """Optional polish right after an offline pack is built (render path).
 
-    Deliberately short-timeout: a render never waits on a flaky provider, and
-    any failure returns the offline pack untouched.
+    The caller keeps the offline pack on any failure, but the notice now says
+    *why* the engine was skipped (timeout, 404, bad key, quota) instead of a
+    generic "unavailable" — a fixable problem should be reported fixably. The
+    budget is :data:`config.AI_RENDER_TIMEOUT` (the old hard-coded 12 s turned
+    a cold provider start into a false "AI unavailable").
     """
     cfg = read(settings)
     if not chain(cfg):
         return pack, "offline", ""
-    polished, provider, _notice = polish_pack(pack, context, settings, timeout=timeout)
+    polished, provider, notice = polish_pack(pack, context, settings, timeout=timeout)
     if not polished:
-        return pack, "offline", "AI unavailable during render — offline pack used."
+        reason = notice or "provider unreachable"
+        return pack, "offline", (
+            f"AI unavailable during render ({reason}) — offline pack used."
+        )
     return polished, provider, ""

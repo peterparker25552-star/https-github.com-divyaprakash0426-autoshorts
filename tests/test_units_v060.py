@@ -34,6 +34,23 @@ class HeatMapTests(unittest.TestCase):
         self.assertIn("scale=20:11:flags=area", graph)
         self.assertIn("%FPS%", graph)
 
+    def test_filter_stacks_skin_over_motion(self):
+        # v0.6.1: the speaker tracker needs skin and motion *separately*, so
+        # the graph downscales each map and vstacks them instead of blending
+        graph = vision.heat_filter(160, 20, 11)
+        self.assertIn("vstack", graph)
+        self.assertEqual(graph.count("scale=20:11:flags=area"), 2)
+
+    def test_split_planes_and_legacy_frames(self):
+        grid = (4, 2)
+        skin = bytes([10, 20, 30, 40, 50, 60, 70, 80])
+        motion = bytes([1, 2, 3, 4, 5, 6, 7, 8])
+        pairs = vision.split_planes([skin + motion, skin], *grid)
+        self.assertEqual(pairs[0], (skin, motion))
+        # a legacy single-plane frame degrades to (skin, empty), never raises
+        self.assertEqual(pairs[1], (skin, b""))
+        self.assertEqual(vision.split_planes([], *grid), [])
+
     def test_grid_follows_aspect_and_is_bounded(self):
         self.assertEqual(vision.grid_for(1920, 1080), (20, 11))
         self.assertEqual(vision.grid_for(1080, 1920), (20, 14))  # clamped

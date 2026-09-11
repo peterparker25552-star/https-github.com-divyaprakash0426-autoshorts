@@ -13,7 +13,7 @@ from pathlib import Path
 
 # --- Brand -----------------------------------------------------------------
 APP_NAME = "Qyro"
-APP_VERSION = "0.6.0"
+APP_VERSION = "0.6.1"
 APP_TAGLINE = "long podcasts → captioned vertical shorts"
 BRAND_CREDIT = "Made with Qyro"
 
@@ -71,8 +71,8 @@ DEFAULT_PLAYLIST = (
 )
 
 DEFAULT_CLIP_COUNT = 5          # shorts generated per episode
-MIN_CLIP_SECONDS = 20           # shortest allowed short
-MAX_CLIP_SECONDS = 60           # longest allowed short
+MIN_CLIP_SECONDS = 25           # shortest allowed short
+MAX_CLIP_SECONDS = 90           # longest allowed short (Shorts allow 3 min)
 EPISODE_PAGE_SIZE = 25          # episodes fetched per playlist page
 
 RENDER_HEIGHTS = {              # quality presets -> output height (9:16)
@@ -212,14 +212,25 @@ PROBE_CACHE_SECONDS = 3600.0
 # Provider chain, cheapest first: offline templates (always work, no key)
 # then the two free tiers, then any OpenAI-compatible endpoint. Every request
 # key lives in settings, is masked out of every response and never logged.
+#
+# v0.6.1: Groq retired ``llama-3.1-8b-instant`` on 2026-08-16 and Google
+# deprecated the 2.0 Flash family on 2026-06-01 — the old defaults made every
+# call fail with a 404 and forced the "AI unavailable during render" fallback.
+# Both defaults now point at the providers' current free-tier models.
 AI_PROVIDERS = ("offline", "gemini", "groq", "custom")
 DEFAULT_AI_PROVIDER = "offline"
 GEMINI_BASE_URL = "https://generativelanguage.googleapis.com/v1beta"
 GROQ_BASE_URL = "https://api.groq.com/openai/v1"
-GROQ_MODEL = "llama-3.1-8b-instant"
-GEMINI_MODEL = "gemini-2.0-flash"
+GROQ_MODEL = "openai/gpt-oss-20b"
+GEMINI_MODEL = "gemini-2.5-flash"
 CUSTOM_MODEL = "gpt-4o-mini"
 AI_TIMEOUT = 25
+# The render path used to hard-code a 12 s polish timeout, which turned a
+# cold-start provider call into "AI unavailable during render". Renders get
+# the full budget plus one automatic retry on transient errors.
+AI_RENDER_TIMEOUT = 25.0
+AI_RETRIES = 1
+AI_RETRY_BACKOFF = 1.5          # seconds before the retry
 SECRET_SETTING_KEYS = ("ai_key", "gemini_key", "groq_key")
 ENGINE_SETTINGS_KEYS = ("ai_provider", "ai_model", "ai_base_url")
 
@@ -249,6 +260,35 @@ DEFAULT_TRACK_ZOOM = "auto"
 TRACK_FPS = 5.0                    # analysis frames per second
 TRACK_EPSILON = 0.006              # path simplification tolerance (normalised)
 TRACK_MAX_KEYFRAMES = 64           # caps the generated ffmpeg expression depth
+
+# v0.6.1 — speaker-aware tracking. The old tracker followed *a* person (the
+# biggest face / the middle of the skin+motion blob); in a two-person frame it
+# jumped between people or framed nobody. The tracker now:
+#   1. separates the skin and motion heat planes and finds up to
+#      TRACK_MAX_PERSONS distinct people (connected skin blobs),
+#   2. reads a voice-activity envelope from the clip's own audio (ffmpeg
+#      ebur128, free and offline),
+#   3. scores each person by motion *while the voice is active* — the active
+#      speaker's head/mouth moves during speech, a listener sits still — and
+#      follows the winner, switching when the other person clearly takes the
+#      turn (hysteresis: SWITCH_RATIO for SWITCH_HOLD seconds).
+# With no audio (or no speech) it falls back to the person who is most
+# persistently present — "mainly present in the frame".
+TRACK_ALGO_VERSION = 2             # bumped so v0.6.0 track caches are re-analysed
+TRACK_MAX_PERSONS = 3              # candidates kept per frame
+PERSON_MIN_MASS = 0.06             # blob must hold >= 6% of the frame's skin
+TRACK_MATCH_JUMP = 0.22            # max normalised jump between frames
+TRACK_MAX_MISS = 1.0               # seconds a track survives without a match
+SWITCH_RATIO = 1.4                 # challenger must beat incumbent by this...
+SWITCH_HOLD = 1.0                  # ...for this many seconds, before a switch
+SPEAK_EMA = 0.70                   # per-frame smoothing of speech motion
+PRESENCE_EMA = 0.85
+VOICE_GRID = 0.1                   # seconds per loudness sample (ebur128 rate)
+VOICE_LO_REL = 0.15                # percentile used only for the flat-curve test
+VOICE_HI_REL = 0.90                # percentile taken as the speech ceiling
+VOICE_DYNAMIC_DB = 25.0            # speech ceiling minus this = the voice threshold
+VOICE_SPREAD_DB = 6.0              # below this dynamic range the curve is flat
+VOICE_FLOOR_DB = -85.0             # below this the frame is digital silence
 
 # --- Caption fonts ----------------------------------------------------------
 # A font *id*, not a font name: Qyro resolves the id against the fonts actually
@@ -361,3 +401,19 @@ TRIM_EDGE_SILENCE = 0.35           # trim pauses longer than this at the edges
 MIN_SPEECH_RATIO = 0.55            # below this, the window is penalised
 MAX_INNER_SILENCE = 2.5            # a single pause longer than this = penalty
 QUALITY_PENALTY = 0.55             # score multiplier for a failing window
+
+# --- v0.6.1 endings: never cut a line in half --------------------------------
+# A short must end when the *speaker* stops, not wherever the score window
+# happens to stop. Windows that end mid-flow are pushed to the next natural
+# stop (a pause after a sentence, terminal punctuation, or the source end),
+# and every cut gets a breath of silence after the last word.
+SENTENCE_END_GAP = 0.35            # a pause >= this after a sentence = clean stop
+WINDOW_END_SLACK = 3.0             # a window may run past max_dur to land a clean stop
+MID_FLOW_PENALTY = 0.70            # score multiplier for windows ending mid-flow
+CLEAN_END_BONUS = 1.10             # score bonus for windows ending on a pause
+SWEET_SPOT_RATIO = 0.62            # preferred duration as a fraction of max_dur
+END_TAIL_SECONDS = 0.45            # breathing room after the last spoken word
+END_TAIL_MAX = 0.9                 # never grow a window by more than this for the tail
+END_TAIL_MIN = 0.18                # even a tight cut gets this much air
+BOUNDARY_MAX_SHIFT = 1.2           # beat-snapped / manual bounds may move this much
+BOUNDARY_SWALLOW_LIMIT = 3.0       # max speech a boundary repair may swallow/skip

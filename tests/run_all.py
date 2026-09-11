@@ -63,6 +63,7 @@ def main() -> int:
         "tests.test_http_stdlib",
         "tests.test_http_v050",
         "tests.test_units_v060",
+        "tests.test_units_v061",
         "tests.test_http_v060",
     ):
         suite.addTests(loader.loadTestsFromName(module))

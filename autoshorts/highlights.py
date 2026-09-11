@@ -14,8 +14,9 @@ windows are returned with human-readable reasons.
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
+from . import config
 from .transcripts import Sentence
 
 # --------------------------------------------------------------------------
@@ -220,6 +221,47 @@ def transcript_stats(sentences: list[Sentence]) -> dict:
 
 
 
+# --------------------------------------------------------------------------
+# Ending quality — "does the speaker actually stop here?" (v0.6.1)
+# --------------------------------------------------------------------------
+def ends_cleanly(sentences: list[Sentence], j: int) -> tuple[bool, str]:
+    """Is ``sentences[j]`` a natural place for a short to stop?
+
+    Three clean endings exist: terminal punctuation, a silence gap after the
+    utterance, or the end of the source. Anything else means the clip would
+    chop a thought in half — the exact "unfinished line" failure.
+    """
+    if not sentences:
+        return False, ""
+    if j >= len(sentences) - 1:
+        return True, "ends with the source"
+    s = sentences[j]
+    if s.terminal:
+        return True, "full sentence"
+    if s.pause_after is not None and s.pause_after >= config.SENTENCE_END_GAP:
+        return True, "lands on a pause"
+    return False, ""
+
+
+def extend_to_clean_end(
+    sentences: list[Sentence], i: int, j: int, limit_end: float
+) -> int:
+    """Push window end ``j`` forward to the first clean stop within budget.
+
+    ``limit_end`` is the latest allowed end time (the moment's ``max_dur``
+    plus slack). Returns the (possibly unchanged) end index.
+    """
+    if ends_cleanly(sentences, j)[0]:
+        return j
+    n = len(sentences)
+    k = j + 1
+    while k < n and sentences[k].end - sentences[i].start <= limit_end:
+        if ends_cleanly(sentences, k)[0]:
+            return k
+        k += 1
+    return j
+
+
 def _pick_title(sentences: list[Sentence]) -> str:
     """Choose the punchiest short sentence as the clip title."""
     best, best_score = None, -1.0
@@ -258,8 +300,8 @@ def _pick_title(sentences: list[Sentence]) -> str:
 def find_highlights(
     sentences: list[Sentence],
     count: int = 5,
-    min_dur: float = 20.0,
-    max_dur: float = 60.0,
+    min_dur: float = 25.0,
+    max_dur: float = 90.0,
     min_gap: float = 5.0,
     profile: str = "viral",
 ) -> list[Highlight]:
@@ -268,6 +310,12 @@ def find_highlights(
         return []
 
     weights = PROFILES.get(profile, PROFILES["viral"])
+    # the ideal short is a bit over half of the caller's budget, so a 90 s
+    # budget looks for ~55 s stories instead of crowding around 35 s
+    target_dur = max(25.0, config.SWEET_SPOT_RATIO * max(10.0, float(max_dur)))
+    # a window may run this far past max_dur when that is what it takes to
+    # end on a natural stop instead of chopping the last line in half
+    end_slack = max(0.0, float(config.WINDOW_END_SLACK))
 
     # Pre-score each sentence once
     per_sentence = [score_sentence(s) for s in sentences]
@@ -299,15 +347,22 @@ def find_highlights(
             + weights["noise"] * min(agg["noise"], 3)
             + weights["filler"] * min(agg["filler"], 4)
         )
-        # duration preference: peak around ~35s
-        sweet = min(dur, 90.0) / 35.0
+        # duration preference: peak around the caller's sweet spot
+        sweet = min(dur, 2.0 * target_dur) / target_dur
         score *= 1.6 - 0.6 * abs(1.0 - sweet) if sweet < 1.6 else 0.4
         # bonus when the window opens on a hook
         if per_sentence[i]["hook"] or _QUESTION_RE.match(sentences[i].text):
             score *= 1.25
-        # slightly prefer windows that don't end mid-story
-        if _TERMINAL_END.search(sentences[j].text.strip()):
-            score *= 1.05
+        # v0.6.1: the ending decides whether the crux of the story survives.
+        # A window that stops where the speaker stops is worth more than a
+        # slightly denser one that chops the payoff line in half.
+        clean, _why = ends_cleanly(sentences, j)
+        if clean:
+            score *= config.CLEAN_END_BONUS
+            if _TERMINAL_END.search(sentences[j].text.strip()):
+                score *= 1.05
+        else:
+            score *= config.MID_FLOW_PENALTY
         out = (score, agg)
         cached[key] = out
         return out
@@ -316,7 +371,7 @@ def find_highlights(
     candidates: list[Highlight] = []
     for i in range(n):
         j = i
-        while j < n and sentences[j].end - sentences[i].start <= max_dur + 2:
+        while j < n and sentences[j].end - sentences[i].start <= max_dur + end_slack:
             dur = sentences[j].end - sentences[i].start
             if dur >= min_dur:
                 score, agg = window_score(i, j)
@@ -363,5 +418,33 @@ def find_highlights(
         ):
             continue
         picked.append(cand)
-    picked.sort(key=lambda h: h.start)
-    return picked
+
+    # v0.6.1 repair pass: a picked moment that still ends mid-flow (its raw
+    # content score outranked every clean-ending variant) is extended to the
+    # next natural stop within budget, so the last line always finishes.
+    limit_end = float(max_dur) + end_slack
+    index_of = {id(s): k for k, s in enumerate(sentences)}
+    repaired: list[Highlight] = []
+    for moment in picked:
+        first = moment.sentences[0] if moment.sentences else None
+        last = moment.sentences[-1] if moment.sentences else None
+        i = index_of.get(id(first))
+        j = index_of.get(id(last))
+        if i is None or j is None:
+            repaired.append(moment)
+            continue
+        k = extend_to_clean_end(sentences, i, j, limit_end)
+        if k == j:
+            repaired.append(moment)
+            continue
+        window = sentences[i : k + 1]
+        score, agg = window_score(i, k)
+        repaired.append(replace(
+            moment,
+            end=sentences[k].end,
+            score=round(max(score, moment.score), 2),
+            reasons=list(moment.reasons) + ["extended to a natural stop"],
+            sentences=window,
+        ))
+    repaired.sort(key=lambda h: h.start)
+    return repaired

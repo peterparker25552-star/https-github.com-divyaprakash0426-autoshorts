@@ -2,10 +2,10 @@
 const $ = (sel) => document.querySelector(sel);
 
 const LENGTH_PRESETS = {
-  short: [20, 30],
-  medium: [30, 45],
-  long: [45, 60],
-  any: [20, 60],
+  short: [25, 40],
+  medium: [40, 65],
+  long: [60, 90],
+  any: [25, 90],
 };
 
 const FORMAT_OPTIONS = [
@@ -129,8 +129,8 @@ let pollTimer = null;
 // user's chosen options survive every refresh.
 let baseDefaults = {
   count: 5,
-  min_dur: 20,
-  max_dur: 60,
+  min_dur: 25,
+  max_dur: 90,
   profile: "viral",
   style: "blur",
   quality: "fast",
@@ -609,10 +609,10 @@ function renderEpisodes() {
           <option value="energy"${opts.profile === "energy" ? " selected" : ""}>High energy</option>
         </select>
         <select class="opt-length" ${disabled} aria-label="Clip length">
-          <option value="short"${lengthKey(opts.min_dur, opts.max_dur) === "short" ? " selected" : ""}>Short · 20–30s</option>
-          <option value="medium"${lengthKey(opts.min_dur, opts.max_dur) === "medium" ? " selected" : ""}>Medium · 30–45s</option>
-          <option value="long"${lengthKey(opts.min_dur, opts.max_dur) === "long" ? " selected" : ""}>Long · 45–60s</option>
-          <option value="any"${lengthKey(opts.min_dur, opts.max_dur) === "any" ? " selected" : ""}>Any · 20–60s</option>
+          <option value="short"${lengthKey(opts.min_dur, opts.max_dur) === "short" ? " selected" : ""}>Short · 25–40s</option>
+          <option value="medium"${lengthKey(opts.min_dur, opts.max_dur) === "medium" ? " selected" : ""}>Medium · 40–65s</option>
+          <option value="long"${lengthKey(opts.min_dur, opts.max_dur) === "long" ? " selected" : ""}>Long · 60–90s</option>
+          <option value="any"${lengthKey(opts.min_dur, opts.max_dur) === "any" ? " selected" : ""}>Any · 25–90s</option>
         </select>
         <select class="opt-style" ${disabled} aria-label="Framing style">
           ${chosen(STYLE_OPTIONS, opts.style)}
