@@ -450,6 +450,19 @@ requests from your IP. Two things reliably clear it:
 If neither is possible, wait out the cooldown and retry; the block is IP-based
 and usually lifts on its own.
 
+### Checking the fix without touching YouTube
+
+```bash
+python3 tools/check_429.py
+```
+
+Runs entirely offline with a fake yt-dlp that answers `HTTP 429`, and walks
+the four situations that used to be a dead end: escaping a blocked client,
+recovering a transcript already on disk while blocked, an honest escalating
+cooldown when every client is blocked, and installing a session. Exits `0`
+when every scenario behaves. `python3 -m unittest tests.test_units_v067 -v`
+covers the same ground as individual test cases.
+
 ## How the highlight engine works (no API keys needed)
 
 1. Captions are fetched one language at a time and split into sentence-like utterances.
