@@ -70,7 +70,24 @@ succeeds, and media downloads handle 429s instead of dying on them. Best of
 all, the cure — a signed-in cookies.txt — can now be installed from
 Tools ▸ YouTube session, because "fix it in data/" is not an answer on a
 phone.
+
+v0.6.8: "the intro does not come when I open the app, but I can play it from
+inside the app." Three gates, each sensible on its own, added up to an ident
+that only ever played once. The seen-once flags were written for a *reload*
+(a pull-to-refresh while a render hogs the CPU, a tab Chrome discarded) and
+were being applied to a *launch* — and an installed app keeps its document
+alive, so its sessionStorage flag outlives every open after the first. A job
+left queued/running in data/state.json by a server that was killed mid-render
+is never picked up again, so /api/state reported the app busy forever and the
+busy gate cancelled the greeting on every open. And the greeting was queued
+behind the first /api/state + /api/health, which on a phone means behind
+ffmpeg, yt-dlp and a YouTube reachability probe. Now boot() tells a launch
+from a reload, coming back to the foreground after 30 seconds away counts as
+a launch (the only "the app was opened" signal an installed app gives),
+recover_interrupted_jobs() parks a dead server's jobs at startup so the app
+stops lying about being busy, "busy" shortens the ident to about two seconds
+instead of cancelling it, and the ident runs before any fetch.
 """
 
-__version__ = "0.6.7"
+__version__ = "0.6.8"
 APP_NAME = "Qyro"

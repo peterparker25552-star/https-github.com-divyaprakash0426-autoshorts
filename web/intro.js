@@ -1,4 +1,4 @@
-/* Qyro v6.6 — the "Spectrum" ident, with a hard guarantee attached.
+/* Qyro v6.8 — the "Spectrum" ident, with a hard guarantee attached.
  *
  * A glowing Q draws itself on black, charges, then bursts outward into a full
  * spectrum of vertical light beams that dance like an equalizer. Everything you
@@ -7,7 +7,7 @@
  * wordmark) — no audio file ships with the app, so the ident works offline,
  * inside the installed PWA and in a Termux WebView exactly like on a desktop.
  *
- * Four rules keep it reliable:
+ * Five rules keep it reliable:
  *   1. ONE clock. Visuals and audio both read `state.clock`; if the browser
  *      blocks autoplay the frame is held at the gate, the tap that unlocks
  *      audio resumes it, and the hit still lands on the burst.
@@ -26,6 +26,17 @@
  *      plain timer dismisses even when rAF never fires again, a hidden tab is
  *      put away immediately, a throwing canvas cannot strand the overlay, and
  *      the CSS only shows the stage once JS asks for it (see `.intro-overlay`).
+ *   5. …and it ALWAYS greets an open. v6.8 owns this one, the mirror image of
+ *      rule 4: "the intro does not come when I open the app, but I can play it
+ *      from inside the app". The seen-once flags were written for a *reload*
+ *      and were being applied to a *launch*, so every open after the first was
+ *      silent — and an installed app, which keeps its document alive and never
+ *      reloads at all, had no greeting left to give. boot() now tells a launch
+ *      from a reload (navigation type), a return to the foreground after
+ *      RESUME_AFTER seconds counts as a launch, a page created while still
+ *      hidden (an Android WebView built a beat before its activity is visible,
+ *      where rAF does not run at all) holds its greeting until it is really on
+ *      screen, and a busy app gets a two-second ident instead of no ident.
  */
 (function () {
   "use strict";
@@ -66,10 +77,19 @@
    *                   before dropped frames are skipped instead of replayed —
    *                   this is the "rainbow screen stuck for a minute" fix;
    *   deadlineSlack   grace after the timeline for the hard dismissal timer.
+   *
+   * v0.6.8 adds a fourth, for the opposite failure — an ident that never
+   * greeted an open at all:
+   *   resumeAfter     an installed app (a PWA icon, a Termux WebView) keeps
+   *                   its document alive, so "opening the app" fires no load
+   *                   event to hook. Coming back to the foreground after this
+   *                   many seconds away *is* an open, and plays the ident;
+   *                   a two-second glance at another app is not.
    */
   const RELOAD_COOLDOWN = 300;
   const CATCHUP_SLACK = 0.35;
   const DEADLINE_SLACK = 4.0;
+  const RESUME_AFTER = 30;
 
   /* ------------------------------------------------------------------ *
    * Maths helpers
@@ -745,6 +765,37 @@
     return ageSeconds < RELOAD_COOLDOWN;
   }
 
+  /* What kind of load this document is. "navigate" is a genuine open of the
+   * app — a launcher tap, a new tab, a WebView started for the first time;
+   * "reload" is a refresh, or a tab the browser discarded under memory
+   * pressure and restored. An engine that will not say (and the headless
+   * harness) counts as reload-like, which is the conservative half of the v6.6
+   * rule: nothing that used to be suppressed starts playing by accident. */
+  function navKind() {
+    try {
+      const perf = window.performance;
+      if (perf && typeof perf.getEntriesByType === "function") {
+        const entry = perf.getEntriesByType("navigation")[0];
+        if (entry && entry.type) return String(entry.type);
+      }
+      // The legacy API — an old Android WebView has nothing else to offer.
+      if (perf && perf.navigation && typeof perf.navigation.type === "number") {
+        return ["navigate", "reload", "back_forward"][perf.navigation.type] || "unknown";
+      }
+    } catch (error) { /* a browser that hides the entry */ }
+    return "unknown";
+  }
+
+  /* app.js owns /api/state, so app.js owns the answer to "is a render in
+   * flight". The ident only asks — and a busy app gets the short form of the
+   * greeting rather than no greeting at all. */
+  let busyProvider = null;
+
+  function isBusy() {
+    if (typeof busyProvider !== "function") return false;
+    try { return !!busyProvider(); } catch (error) { return false; }
+  }
+
   function mark(el, cls, on) {
     if (el && el.classList) el.classList.toggle(cls, !!on);
   }
@@ -960,6 +1011,7 @@
       gated: false,
       done: false,
       reduced,
+      quick: false,
       persist: opts.persist !== false,
       onDone: typeof opts.onDone === "function" ? opts.onDone : null,
       beams: stage ? makeBeams(stage.w, stage.h, count) : [],
@@ -987,8 +1039,14 @@
 
     // Motion-sensitive users skip the slow trace and the dust, but still get
     // the burst, the beams and the ta-dum — the ident is mostly a sound cue.
-    state.endAt = reduced ? T.word + 0.9 : T.end;
-    if (reduced) {
+    // v0.6.8: a render in flight gets the same head start and an earlier
+    // curtain (`quick`), so the ident still greets the open — in about two
+    // seconds — instead of standing between the user and the job they came to
+    // watch. Cancelling it outright is what made it look broken.
+    const quick = opts.quick === true && !reduced;
+    state.quick = quick;
+    state.endAt = reduced ? T.word + 0.9 : quick ? T.word + 0.45 : T.end;
+    if (reduced || quick) {
       state.clock = T.ta - 0.06;
       state.gated = true;
       try {
@@ -1016,18 +1074,107 @@
     return state;
   }
 
+  /* A greeting owed to a page that was created while still hidden. */
+  let pendingLaunch = false;
+
+  /* The launch decision — and the reason v0.6.8 exists.
+   *
+   * The ident greets an *open* of the app. Only a reload keeps the v6.6 "you
+   * have already seen it" rules: a pull-to-refresh while a render hogs the
+   * CPU, or a tab the browser discarded and restored, must not replay a
+   * six-second full-screen animation. Before this, a genuine open was
+   * indistinguishable from either, and the session flag (which an installed
+   * app keeps for as long as its WebView process lives) plus the reload
+   * cool-down between them swallowed every launch after the very first — so
+   * the intro "never came" while the header sparkle button still played it on
+   * demand, which is exactly how the report read.
+   *
+   *   opts.launch  the caller knows this is an open (a resume from the
+   *                background), so skip the navigation-type guess;
+   *   opts.busy    a render is in flight — play the short form of the greeting
+   *                instead of the full six seconds (defaults to asking app.js).
+   */
+  function bootIdent(options) {
+    const opts = options || {};
+    const overlay = document.getElementById("introOverlay");
+    if (!overlay) return null;
+    // Already greeting the user: never restart it (a resume and a pageshow can
+    // arrive in the same tick, and a stuttering ident looks like a bug).
+    if (state && !state.done) return state;
+    // Created hidden — an Android WebView built a beat before its activity is
+    // visible, a prerendered tab, a browser restoring a window in the
+    // background. requestAnimationFrame does not run while the page is hidden,
+    // so an ident started now would be dismissed by its own deadline before
+    // anybody saw it. Hold the greeting and give it when the page comes up.
+    if (document.hidden) {
+      pendingLaunch = true;
+      overlay.classList.add("dismissed", "live");
+      return null;
+    }
+    const forced = new URLSearchParams(window.location.search).get("intro") === "1";
+    const launched = opts.launch === true || navKind() === "navigate";
+    if (!forced && !launched && (read(STORE_SEEN) === "1" || shownRecently())) {
+      // Returning visitor, and this is only a reload: the stage is still in the
+      // markup, so it has to be put away here — otherwise every reload shows a
+      // black sheet for the whole fail-safe timeout instead of the app.
+      overlay.classList.add("dismissed", "live");
+      return null;
+    }
+    // Asked for on purpose (?intro=1): all six seconds, whatever else is going on.
+    if (forced) return play({ persist: false });
+    const busy = opts.busy === undefined ? isBusy() : !!opts.busy;
+    return play({ quick: busy });
+  }
+
+  /* Hidden: put the stage away at once — rAF stops entirely in a hidden tab,
+   * so a half-played ident would sit frozen over the app until the user came
+   * back, and nobody watches an intro they cannot see.
+   * Visible again after a real absence: that *is* opening the app. An
+   * installed PWA or a Termux WebView keeps its document alive, so no load
+   * event ever fires to greet the user — this handler is the only signal there
+   * is, and it is why the ident now arrives on every open. */
+  let hiddenAt = 0;
+
   document.addEventListener("visibilitychange", () => {
-    if (!state || !document.hidden) return;
-    // rAF stops entirely in a hidden tab, so a half-played ident would sit
-    // frozen over the app until the user came back. Nobody watches an intro
-    // they cannot see: stop the sound and put the stage away.
-    if (sound && sound.playing) sound.halt();
-    finish(false);
+    if (document.hidden) {
+      hiddenAt = Date.now();
+      if (!state) return;
+      if (sound && sound.playing) sound.halt();
+      finish(false);
+      return;
+    }
+    const awaySeconds = hiddenAt ? (Date.now() - hiddenAt) / 1000 : 0;
+    hiddenAt = 0;
+    // A greeting that was owed from a hidden load does not have to earn its
+    // way past the absence threshold: the user has not seen one yet.
+    const owed = pendingLaunch;
+    pendingLaunch = false;
+    if (!owed && awaySeconds < RESUME_AFTER) return;
+    bootIdent({ launch: true });
   });
+
+  /* A tab restored from the back/forward cache fires no load event, and some
+   * engines fire no visibilitychange either: same signal, same greeting. */
+  window.addEventListener("pageshow", (event) => {
+    if (!event || !event.persisted) return;
+    bootIdent({ launch: true });
+  });
+
+  /* Some engines fire neither event for a page that was painted while hidden,
+   * so the owed greeting is also collected on the first frame the app is
+   * genuinely on screen. Cheap, idempotent, and it is the difference between
+   * "the intro never comes" and "it comes" on a cold WebView start. */
+  function collectPendingLaunch() {
+    if (!pendingLaunch || document.hidden) return;
+    pendingLaunch = false;
+    bootIdent({ launch: true });
+  }
+  window.addEventListener("focus", collectPendingLaunch);
+  window.addEventListener("pageshow", collectPendingLaunch);
 
   window.QyroIdent = {
     T,
-    version: "6.6-spectrum",
+    version: "6.8-spectrum",
     isPlaying() { return !!state && !state.done; },
     soundEnabled() {
       if (sound) return sound.enabled();
@@ -1038,6 +1185,10 @@
       if (!sound) sound = createSound();
       sound.setEnabled(value);
     },
+    /* app.js hands over its "is a render in flight" test so a busy open gets
+     * the short ident instead of none. Kept as a provider because the answer
+     * lives in /api/state, which the ident must not fetch for itself. */
+    setBusyProvider(fn) { busyProvider = typeof fn === "function" ? fn : null; },
     play,
     skip() { finish(true); },
     /* Header button / ?intro=1: forget the session flag and run it again. */
@@ -1054,21 +1205,8 @@
       if (!document.getElementById("introOverlay")) return null;
       return play({ persist: false });
     },
-    /* Called once from app.js: shows the ident at most per browser session,
-     * and never twice inside a reload storm (see RELOAD_COOLDOWN). */
-    boot() {
-      const overlay = document.getElementById("introOverlay");
-      const forced = new URLSearchParams(window.location.search).get("intro") === "1";
-      if (!forced && (read(STORE_SEEN) === "1" || shownRecently())) {
-        // Returning visitor: the stage is still in the markup, so it has to be
-        // put away here — otherwise every reload shows a black sheet for the
-        // whole fail-safe timeout instead of the app.
-        if (overlay) {
-          overlay.classList.add("dismissed", "live");
-        }
-        return null;
-      }
-      return play(forced ? { persist: false } : {});
-    },
+    /* Called from app.js on every open, and from the handlers above when the
+     * app comes back to the foreground. */
+    boot(options) { return bootIdent(options); },
   };
 })();

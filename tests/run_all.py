@@ -23,6 +23,13 @@ reload cool-down — and the harness's starved-frame scenarios), the labelled
 demo placeholder that can never pass for a downloaded video, the ``?dl=1``
 download disposition, and the retired-model rescue in the free AI engine.
 
+v0.6.8 added ``test_units_v068``: the other half of the ident contract — an
+*open* of the app must be greeted. A launch is told from a reload, a return to
+the foreground after 30 s counts as a launch, a busy app gets a two-second
+ident instead of none, the greeting no longer waits for /api/health, and
+``recover_interrupted_jobs`` stops a dead server's jobs from reporting the app
+busy forever (proved end to end against a real stdlib server restart).
+
 Usage:  python -m tests.run_all   (or python tests/run_all.py from the repo)
 """
 from __future__ import annotations
@@ -86,6 +93,10 @@ def main() -> int:
         # that lets a phone user apply the real fix.
         "tests.test_units_v067",
         "tests.test_http_v067",
+        # v0.6.8 — "the intro does not come when I open the app": a launch is
+        # not a reload, a resume is a launch, busy shortens instead of
+        # cancelling, and a dead server's jobs stop looking like work.
+        "tests.test_units_v068",
     ):
         suite.addTests(loader.loadTestsFromName(module))
     runner = unittest.TextTestRunner(verbosity=1)

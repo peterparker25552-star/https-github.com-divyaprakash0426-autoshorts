@@ -2267,20 +2267,40 @@ function identAvailable() {
   return !!window.QyroIdent;
 }
 
-/* The ident is a 6-second full-screen animation. It must never stand between
- * someone and the render they are waiting for, so the auto-play is decided
- * after the first /api/state: while a job is queued or running — which is when
- * a phone is busiest and a reload is most likely — the app opens straight to
- * the work. The header sparkle button and ?intro=1 always still play it. */
+/* Is a render in flight? The ident asks through setBusyProvider() and plays
+ * its two-second form instead of the full six, so it never stands between
+ * someone and the job they are watching.
+ *
+ * v0.6.8 — this used to *cancel* the ident, and that was half of the bug
+ * behind "the intro does not come when I open the app, but I can play it from
+ * inside the app". A job left "queued"/"running" in data/state.json by a server
+ * that was killed mid-render is never picked up again (the worker's queue lives
+ * in memory), so /api/state reported the app as busy forever and every open
+ * after that went straight to the work with no greeting. The server now parks
+ * those jobs on start, and the UI no longer treats "busy" as "no intro". */
 function appIsBusy() {
   const jobs = (state.data && state.data.jobs) || [];
   return jobs.some((job) => job.status === "queued" || job.status === "running");
 }
 
+/* The greeting goes first, before any fetch. /api/health shells out to ffmpeg
+ * and yt-dlp and asks YouTube whether it is reachable — on a phone that is
+ * seconds, and an intro that arrives seconds after the app is already on screen
+ * reads as no intro at all (then lands on top of whatever the user started
+ * doing). Nothing about the ident needs the server, so it no longer waits for
+ * one. The header sparkle button and ?intro=1 still play it on demand. */
 function initIntro() {
   if (!identAvailable()) return;
-  if (appIsBusy() && !/[?&]intro=1(&|$)/.test(location.search)) return;
-  window.QyroIdent.boot();
+  // Guarded, because a half-updated cache (a cached intro.js from the previous
+  // release next to a fresh app.js) must not throw out of DOMContentLoaded and
+  // take the whole app with it — a missing greeting is a far smaller bug than a
+  // dead UI, and the CSS fail-safe hides the stage when boot() is not there.
+  if (typeof window.QyroIdent.setBusyProvider === "function") {
+    window.QyroIdent.setBusyProvider(appIsBusy);
+  }
+  if (typeof window.QyroIdent.boot === "function") {
+    window.QyroIdent.boot({ busy: appIsBusy() });
+  }
 }
 
 function replayIntro() {
@@ -2299,6 +2319,11 @@ function setIdentSound(on) {
 }
 
 window.addEventListener("DOMContentLoaded", async () => {
+  /* Before a single listener is wired and before a single byte is fetched: the
+   * ident greets the open. It needs nothing from the server, and every
+   * millisecond of delay is a millisecond the user spends looking at an app
+   * that appears to have no intro at all (see initIntro). */
+  initIntro();
   $("#loadPlaylist").addEventListener("click", loadPlaylist);
   $("#loadDemo").addEventListener("click", loadDemo);
   $("#dashBtn").addEventListener("click", openDashboard);
@@ -2333,7 +2358,10 @@ window.addEventListener("DOMContentLoaded", async () => {
   if (!$("#playlistUrl").value && baseDefaults.playlist_url) {
     $("#playlistUrl").value = baseDefaults.playlist_url;
   }
-  initIntro();
+  // The ident already greeted this open — it is the first statement above, and
+  // it must not wait for /api/state or /api/health. Now that the state is in,
+  // the busy provider the ident was handed starts answering for real, which is
+  // what a later resume-from-background greeting uses.
   if ((state.data?.jobs || []).length) fastPoll();
   else pollTimer = setInterval(refresh, 8000);
 });

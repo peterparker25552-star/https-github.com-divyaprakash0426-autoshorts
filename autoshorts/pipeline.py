@@ -3,6 +3,11 @@
 Steps stay transcript -> highlights -> media -> render. A single background
 worker processes the queue so render jobs and YouTube requests never fan out.
 Jobs cancelled while still queued are skipped by the worker and never run.
+
+The queue is in memory, the state file is not: a job still marked
+``queued``/``running`` when a server starts belongs to a process that is gone,
+so ``recover_interrupted_jobs`` parks it as an ``error`` ("Interrupted") before
+the worker starts. Without that the app reports work nobody is doing — forever.
 """
 from __future__ import annotations
 
@@ -40,10 +45,57 @@ def _bounded(value, default: float, bounds: tuple[float, float]) -> float:
     return number
 
 
+def recover_interrupted_jobs(store: Store) -> int:
+    """Park the jobs a previous server process was killed in the middle of.
+
+    ``data/state.json`` outlives the process that wrote it; the worker's queue
+    does not. A job left ``queued`` or ``running`` by a server that died (a
+    phone's Termux session swiped away, a laptop lid, Ctrl-C during a render)
+    is never picked up again by anything, and the app then lies about being
+    busy forever: an episode stuck on "processing", a phantom job in the
+    dashboard, and ``/api/state`` reporting active work on every open — which
+    is what stopped the intro ident from greeting one, because the UI used to
+    read "a job is running" as "do not play the intro".
+
+    They become ordinary ``error`` jobs with ``error="Interrupted"``, exactly
+    the way a backup restore treats them, so Retry re-queues them. Returns the
+    number of jobs parked.
+    """
+    stale = store.active_jobs()
+    for job in stale:
+        store.update_job(
+            job["id"],
+            status="error",
+            step="error",
+            error="Interrupted",
+            message="Interrupted by a server restart — press Retry to run it again",
+        )
+    for job in stale:
+        maintenance.reset_episode_if_idle(store, job.get("episode_id"))
+    # An episode left mid-flight with no job record at all (pruned, or the job
+    # never reached the disk) can never settle by itself either.
+    for episode in store.episodes():
+        ep_id = episode.get("id")
+        if (
+            episode.get("status") in ("processing", "queued")
+            and not store.has_active_jobs(ep_id)
+        ):
+            store.update_episode(ep_id, status="new", error=None)
+    if stale:
+        print(
+            f"[qyro] parked {len(stale)} job(s) the previous server was killed "
+            "in the middle of — press Retry in the dashboard to run them again"
+        )
+    return len(stale)
+
+
 class Pipeline:
     def __init__(self, store: Store):
         self.store = store
         self._queue: queue.Queue[str] = queue.Queue()
+        # This process's queue starts empty, so anything the state file still
+        # calls queued/running belongs to a server that is gone (see above).
+        self.recovered_jobs = recover_interrupted_jobs(store)
         self._worker = threading.Thread(
             target=self._worker_loop,
             name="autoshorts-worker",

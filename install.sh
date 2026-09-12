@@ -21,8 +21,12 @@ echo "Installing Qyro dependencies (this downloads ffmpeg too)..."
 .venv/bin/python -m pip install --upgrade pip --quiet
 .venv/bin/pip install --quiet -r requirements.txt
 
+# Read the version from the checkout instead of maintaining a second,
+# easy-to-stale version string in this installer.
+APP_VERSION="$(.venv/bin/python -c 'from autoshorts import __version__; print(__version__)' 2>/dev/null || printf '%s' 'unknown')"
+
 echo
 echo "============================================================"
-echo "  Qyro v0.6.6 installed! Start the app with:  ./run.sh"
+echo "  Qyro v${APP_VERSION} installed! Start the app with:  ./run.sh"
 echo "  Then open http://localhost:8000 in your browser."
 echo "============================================================"

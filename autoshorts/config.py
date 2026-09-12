@@ -14,7 +14,7 @@ from pathlib import Path
 
 # --- Brand -----------------------------------------------------------------
 APP_NAME = "Qyro"
-APP_VERSION = "0.6.7"
+APP_VERSION = "0.6.8"
 APP_TAGLINE = "long podcasts → captioned vertical shorts"
 BRAND_CREDIT = "Made with Qyro"
 

@@ -109,16 +109,23 @@ class IdentLifecycleTests(unittest.TestCase):
         self.assertIn("s.clock = s.endAt;", frame)
 
     def test_a_hidden_tab_is_put_away_instead_of_frozen(self):
-        handler = block(INTRO_JS, 'document.addEventListener("visibilitychange"')
-        self.assertIn("if (!state || !document.hidden) return;", handler)
+        """v0.6.8: the same handler now also *greets* a return to the
+        foreground, so the hidden half is asserted inside its own branch."""
+        handler = block(INTRO_JS, 'document.addEventListener("visibilitychange"',
+                        "\n  });")
+        self.assertIn("if (document.hidden) {", handler)
+        self.assertIn("if (!state) return;", handler)
         self.assertIn("sound.halt();", handler)
         self.assertIn("finish(false);", handler)
 
     def test_a_reload_storm_does_not_replay_the_ident(self):
         self.assertIn("RELOAD_COOLDOWN = 300", INTRO_JS)
         self.assertIn("function shownRecently()", INTRO_JS)
-        boot = block(INTRO_JS, "boot() {")
+        # v0.6.8: boot() grew a launch/reload distinction, and the cool-down
+        # now only guards the reload half of it (see test_units_v068).
+        boot = block(INTRO_JS, "function bootIdent(options) {", "\n  }")
         self.assertIn('read(STORE_SEEN) === "1" || shownRecently()', boot)
+        self.assertIn("if (!forced && !launched &&", boot)
         # the stamp is written for the browser, not just for the session
         self.assertIn("storeLocal(STORE_SEEN_AT, Date.now())", INTRO_JS)
         helpers = block(INTRO_JS, "function storeLocal(key, value) {")
@@ -142,18 +149,16 @@ class IdentLifecycleTests(unittest.TestCase):
         self.assertIn(".intro-overlay:not(.live)", STYLE_CSS)
         self.assertIn("introFailSafe 0.9s ease 6.5s both", STYLE_CSS)
 
-    def test_the_app_decides_after_it_knows_the_app_is_busy(self):
+    def test_the_app_knows_whether_it_is_busy(self):
+        """v0.6.8 moved the *decision*: busy shortens the ident rather than
+        cancelling it, and the greeting no longer waits for /api/state (see
+        test_units_v068 for both). The busy test itself is unchanged."""
         self.assertIn("function appIsBusy()", APP_JS)
         self.assertIn('job.status === "queued" || job.status === "running"',
                       APP_JS)
-        gate = block(APP_JS, "function initIntro() {")
-        self.assertIn("if (appIsBusy() && !/[?&]intro=1(&|$)/.test(location.search)) return;",
-                      gate)
-        self.assertIn("window.QyroIdent.boot();", gate)
-        # the decision needs /api/state, so it happens after the first refresh
-        boot = block(APP_JS, "await refresh();", "\n});")
-        self.assertIn("initIntro();", boot)
-        self.assertLess(boot.index("await refresh();"), boot.index("initIntro();"))
+        gate = block(APP_JS, "function initIntro() {", "\n}")
+        self.assertIn("window.QyroIdent.setBusyProvider(appIsBusy);", gate)
+        self.assertIn("window.QyroIdent.boot({ busy: appIsBusy() });", gate)
 
     def test_the_shell_cache_moved_so_an_installed_pwa_gets_the_fix(self):
         import re

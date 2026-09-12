@@ -16,6 +16,61 @@ playlist URL ──▶ yt-dlp ──▶ transcripts ──▶ highlight engine �
                  captions)                     questions · energy)   burned-in captions)
 ```
 
+## What's new in v0.6.8 — the intro greets every open
+
+One report: *"The app intro is not coming while I am opening it. I can access it
+from inside the app, but it should come when I open the app."* The "inside the
+app" half is the header sparkle button, which calls `QyroIdent.replay()` and
+bypasses every gate — so the ident was never broken, the **decision to play it**
+was. Five separate things stood between an open and its greeting, each of them
+defensible on its own:
+
+- **A launch is not a reload.** `boot()` now asks the browser what kind of load
+  this is (`performance.getEntriesByType("navigation")`, with the legacy
+  `performance.navigation` fallback an old Android WebView needs). The v0.6.6
+  seen-once rules were written for a *reload* — a pull-to-refresh while a render
+  hogs the CPU, a tab Chrome discarded and restored — and were being applied to
+  every load, while an installed app keeps its `sessionStorage` for as long as
+  its WebView process lives. A `navigate` (a launcher tap, a fresh tab, a cold
+  WebView) is now greeted even with both flags set; a `reload` behaves exactly
+  as before, and an engine that will not say is treated as reload-like.
+- **Coming back to the foreground is an open.** An installed PWA or WebView
+  often never reloads at all — tapping the icon just brings the existing
+  document back — so nothing ran and nothing greeted. `visibilitychange` (and
+  `pageshow` with `persisted`) now measures the absence: more than
+  `RESUME_AFTER` (30 s) away and the ident plays again, because that *was* an
+  open. A five-second glance at another app stays silent.
+- **A page created hidden holds its greeting.** An Android WebView is routinely
+  built a beat before its activity is visible, and `requestAnimationFrame` does
+  not run in a hidden page — the ident used to be dismissed by its own deadline
+  before anybody could see it. `boot()` now notices `document.hidden`, keeps the
+  stage away and owes the greeting, giving it on the first
+  `visibilitychange`/`focus`/`pageshow` where the page is really on screen.
+- **Busy shortens the greeting instead of cancelling it.** `initIntro()` used to
+  `return` when a job was queued or running. It now hands `appIsBusy` to the
+  ident (`setBusyProvider`) and plays the **short form** — in at the burst, out
+  just after the wordmark, about two seconds with the ta-dum intact. And the
+  reason "busy" was permanently true on many installs is fixed at the root:
+  `recover_interrupted_jobs()` parks the jobs a dead server left
+  `queued`/`running` in `data/state.json` (the worker's queue is in memory, so
+  nothing would ever finish them) as retryable `error`/`Interrupted` jobs, and
+  puts their episodes back to `new`. No more phantom "processing", no more app
+  that reports work nobody is doing.
+- **The greeting no longer waits for the server.** `initIntro()` is the first
+  statement of `DOMContentLoaded` instead of running after the first
+  `/api/state` + `/api/health` — which on a phone means after `ffmpeg -version`,
+  `yt-dlp --version` and a six-second YouTube reachability probe. An intro that
+  lands seconds late reads as no intro at all, then covers whatever you had
+  started doing.
+
+The shell cache moved to `qyro-v0.6.8-shell`, so an installed home-screen icon
+picks the fix up on its next launch. `tests/ident_harness.js` grew seven
+scenarios (`coldOpen`, `reloadStorm`, `resume`, `shortAway`, `busy`,
+`busyProvider`, `startHidden`) and still hands the page back in every one;
+`tests/test_units_v068.py` pins the rest, including a real stdlib-server
+restart against a state file full of dead jobs. Details in
+[`UPGRADE_6.8.md`](UPGRADE_6.8.md).
+
 ## What's new in v0.6.6 — the ident lets go, and demo media says what it is
 
 Two reports, both "the app is broken", both something else entirely.

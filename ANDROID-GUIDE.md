@@ -81,11 +81,12 @@ This downloads Python, ffmpeg (the video engine), git, then Qyro itself, then
 the Hindi caption font. It takes **5–15 minutes** depending on your connection.
 You will see a lot of scrolling text; that is normal.
 
-When it finishes you will see:
+When it finishes you will see this (the version number is whatever you just
+downloaded):
 
 ```
 ============================================================
-  ✅ Qyro v0.6.6 is installed!
+  ✅ Qyro v0.6.8 is installed!
 
   TO START IT (any time):
      open Termux and type:  bash ~/start-autoshorts.sh
