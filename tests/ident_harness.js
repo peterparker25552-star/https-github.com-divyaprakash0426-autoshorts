@@ -13,6 +13,18 @@
  * the stage over the app: a starved main thread (4 fps), rAF never coming back,
  * the tab going hidden mid-roll, a canvas whose context is lost, and a page
  * reloaded seconds after the ident already ran.
+ *
+ * v0.6.8 adds the other half of the contract — an open must be *greeted*: a
+ * genuine launch (navigation type "navigate") plays even with a seen session
+ * and a stamp four seconds old, the same stamps on a "reload" still show the
+ * app instead, a return to the foreground a minute later plays again (an
+ * installed app never reloads, so nothing else would greet it), a
+ * four-second glance at another app does not, and a render in flight gets the
+ * two-second greeting — once passed as an argument, once through the busy
+ * provider app.js installs. A seventh, `startHidden`, covers the platform case
+ * behind the report: a document created while the page is still hidden (an
+ * Android WebView built before its activity is visible) must hold the greeting
+ * and give it when the app actually comes up, not spend it on nobody.
  */
 "use strict";
 
@@ -308,6 +320,8 @@ function brokenCtx() {
 function runScenario(cfg) {
   resetCtx();
   const { doc, overlay } = buildDocument();
+  // v0.6.8: some platforms build the document a beat before it is visible.
+  if (cfg.startHidden) doc.hidden = true;
   if (cfg.throwOnPaint) {
     matchOne(overlay, ".intro-stage").getContext = () => brokenCtx();
   }
@@ -344,6 +358,20 @@ function runScenario(cfg) {
     clearTimeout: () => {},
     matchMedia: (q) => ({ matches: !!cfg.reduced, media: q, addEventListener() {}, addListener() {} }),
     location: { search: cfg.search || "" },
+    /* v0.6.8 — the navigation type is how the module tells an *open* of the
+     * app from a reload. Absent (as it is in this harness by default) the
+     * module must fall back to the conservative, reload-like half of the rule,
+     * which is why the pre-0.6.8 scenarios below still behave the same. */
+    performance: cfg.nav
+      ? { getEntriesByType: (kind) => (kind === "navigation" ? [cfg.nav] : []) }
+      : undefined,
+  };
+
+  /* A clock the scenario can move: "the app was opened again after a minute"
+   * is a wall-clock fact, not a frame fact. */
+  let dateNow = Date.now();
+  const SandboxDate = class extends Date {
+    static now() { return dateNow; }
   };
 
   const sandbox = {
@@ -356,7 +384,7 @@ function runScenario(cfg) {
     Float32Array,
     Uint8Array,
     Math,
-    Date,
+    Date: SandboxDate,
     JSON,
     Promise,
     console: { log: () => {}, warn: () => {}, error: () => {} },
@@ -368,10 +396,17 @@ function runScenario(cfg) {
   const trace = [];
   let gestureDone = false;
   let hiddenDone = false;
+  let resumedDone = false;
+  let cuesAtResume = 0;
+  let contextsAtResume = 0;
+  let framesAtResume = 0;
   let framesDelivered = 0;
   let endedWall = null;
   let error = null;
   const step = cfg.lag === undefined ? FRAME : cfg.lag;
+  /* A hide/show scenario owes a second chance: the first run's dismissal is
+   * not the end of the story until the app has come back. */
+  const owesResume = () => cfg.showAt !== undefined && !resumedDone;
 
   const pump = () => {
     // let promise chains from resume()/arm() settle between frames
@@ -387,7 +422,8 @@ function runScenario(cfg) {
   };
 
   try {
-    ident.boot();
+    if (cfg.providerBusy !== undefined) ident.setBusyProvider(() => cfg.providerBusy);
+    ident.boot(cfg.bootArgs);
     for (let i = 0; i < Math.round(FPS * 14); i += 1) {
       now += step;
       if (ctxRef) ctxRef.currentTime = now / 1000;
@@ -406,7 +442,26 @@ function runScenario(cfg) {
         doc.hidden = true;
         doc.dispatch("visibilitychange", { type: "visibilitychange" });
       }
-      if (overlay.classList.contains("dismissed")) { endedWall = now / 1000; break; }
+      // …and the user opened the app again. An installed PWA or WebView keeps
+      // its document alive, so this is the only launch signal it ever gets:
+      // the module has to decide from the wall clock whether the absence was
+      // long enough to count as an open.
+      if (cfg.showAt !== undefined && !resumedDone && now / 1000 >= cfg.showAt
+          && (hiddenDone || cfg.startHidden)) {
+        resumedDone = true;
+        cuesAtResume = rec.started.length;
+        contextsAtResume = rec.contexts;
+        framesAtResume = framesDelivered;
+        dateNow += cfg.awayMs === undefined ? 60000 : cfg.awayMs;
+        doc.hidden = false;
+        doc.dispatch("visibilitychange", { type: "visibilitychange" });
+      }
+      // While a resume is still owed, a dismissed overlay is only the first run
+      // having finished: keep pumping so the second greeting can be observed.
+      if (overlay.classList.contains("dismissed") && !owesResume()) {
+        endedWall = now / 1000;
+        break;
+      }
       // `noFramesAfter` starves the module: from that frame on, the browser
       // simply never calls back, while timers keep running in the background.
       if (cfg.noFramesAfter !== undefined && i >= cfg.noFramesAfter) rafQueue.length = 0;
@@ -415,7 +470,10 @@ function runScenario(cfg) {
       framesDelivered += queued.length;
       queued.forEach((fn) => fn(now));
       trace.push({ wall: Number((now / 1000).toFixed(3)), cues: rec.started.length });
-      if (overlay.classList.contains("dismissed")) { endedWall = now / 1000; break; }
+      if (overlay.classList.contains("dismissed") && !owesResume()) {
+        endedWall = now / 1000;
+        break;
+      }
       pump();
     }
   } catch (thrown) {
@@ -431,6 +489,10 @@ function runScenario(cfg) {
   return {
     error,
     frames: framesDelivered,
+    resumed: resumedDone,
+    resumeFrames: resumedDone ? framesDelivered - framesAtResume : null,
+    resumeCues: resumedDone ? rec.started.length - cuesAtResume : null,
+    contextsAtResume: resumedDone ? contextsAtResume : null,
     classes: {
       live: overlay.classList.contains("live"),
       dismissed: overlay.classList.contains("dismissed"),
@@ -440,6 +502,7 @@ function runScenario(cfg) {
     },
     overlayRemoved: overlay.removed,
     sessionFlag: session["qyro.introSeen"] || null,
+    localSeenAt: local["qyro.introSeenAt"] || null,
     contexts: rec.contexts,
     resumeCalls: rec.resumeCalls,
     resumeRefused: rec.resumeRefused,
@@ -512,6 +575,55 @@ const scenarios = {
     note: "reloaded seconds after a previous ident: the app shows, not the intro",
     local: { "qyro.introSeenAt": String(Date.now() - 4000) },
   },
+  /* v0.6.8 — the report these six exist for: "the intro does not come when I
+   * open the app, but I can play it from inside the app". A launch is not a
+   * reload; an installed app that keeps its document alive and never reloads
+   * still has to greet its user; and a render in flight shortens the greeting
+   * instead of cancelling it (which is what made it look broken). */
+  coldOpen: {
+    note: "a genuine open plays even with a seen session and a fresh stamp",
+    nav: { type: "navigate" },
+    session: { "qyro.introSeen": "1" },
+    local: { "qyro.introSeenAt": String(Date.now() - 4000) },
+  },
+  reloadStorm: {
+    note: "the same stamps on a reload still mean: the app, not the intro",
+    nav: { type: "reload" },
+    session: { "qyro.introSeen": "1" },
+    local: { "qyro.introSeenAt": String(Date.now() - 4000) },
+  },
+  resume: {
+    note: "back to the foreground a minute later: the app was opened again",
+    hideAt: 2.0,
+    showAt: 5.0,
+    awayMs: 60000,
+    keepPumping: true,
+  },
+  shortAway: {
+    note: "a four-second glance at another app is not an open: no replay",
+    hideAt: 2.0,
+    showAt: 5.0,
+    awayMs: 4000,
+    keepPumping: true,
+  },
+  busy: {
+    note: "a render in flight: the short greeting, not six seconds, not nothing",
+    bootArgs: { busy: true },
+  },
+  busyProvider: {
+    note: "app.js hands over its busy test and the ident asks it",
+    nav: { type: "navigate" },
+    providerBusy: true,
+  },
+  startHidden: {
+    note: "created hidden (a WebView built before its activity is visible): "
+        + "hold the greeting and give it when the page comes up",
+    nav: { type: "navigate" },
+    startHidden: true,
+    showAt: 1.0,
+    awayMs: 0,
+    keepPumping: true,
+  },
 };
 
 const results = {};
@@ -528,12 +640,16 @@ const done = (key, r) => r.classes.live && r.classes.dismissed;
 
 // Scenarios that are *about* not painting (lost context, starved frames, a
 // seen visit) are held to the dismissal contract, not the paint contract.
-const sparse = new Set(["again", "cooldown", "thrown", "noFrames", "starved"]);
+const sparse = new Set(["again", "cooldown", "reloadStorm", "thrown", "noFrames",
+                        "starved", "shortAway"]);
+// A returning visit on a reload: the stage must be put away on the first frame
+// and nothing may be built to play.
+const seenLike = new Set(["again", "cooldown", "reloadStorm"]);
 
 Object.entries(results).forEach(([key, r]) => {
   if (r.error) fail.push(`${key}: threw ${r.error}`);
 
-  if (key === "again" || key === "cooldown") {
+  if (seenLike.has(key)) {
     // a returning visit must hide the stage on the very first frame
     if (!r.classes.dismissed) fail.push(`${key}: seen overlay still covers the app`);
     if (!r.classes.live) fail.push(`${key}: seen overlay must arm the CSS fail-safe off`);
@@ -570,6 +686,47 @@ expect(results.thrown.endedWall !== null && results.thrown.endedWall < 1.0,
        "thrown: a failed frame must end the ident at once, not spin");
 expect(results.cooldown.cues === 0 && results.cooldown.contexts === 0,
        "cooldown: a reload storm must not rebuild the audio graph");
+
+/* v0.6.8: "the intro does not come when I open the app." An open is greeted —
+ * every kind of open, including the kind an installed app makes by coming back
+ * to the foreground — while a reload keeps the v6.6 rule that made it stop. */
+expect(results.coldOpen.contexts >= 1 && results.coldOpen.cues > 20,
+       "coldOpen: a genuine open must play the ident even after a seen session");
+expect(results.coldOpen.classes.live && results.coldOpen.classes.dismissed,
+       "coldOpen: the greeting must arm the stage and then hand the page back");
+expect(results.coldOpen.localSeenAt !== null,
+       "coldOpen: a launch must re-stamp the seen-at time for the reload rule");
+expect(results.reloadStorm.contexts === 0 && results.reloadStorm.cues === 0,
+       "reloadStorm: a reload inside the cool-down must still show the app");
+expect(results.resume.resumed
+       && results.resume.resumeFrames > 40 && results.resume.resumeCues > 20,
+       "resume: coming back a minute later must greet the user again (an "
+       + "installed app never reloads, so nothing else would)");
+expect(results.resume.contexts === 2,
+       `resume: the second greeting needs its own audio context (got ${results.resume.contexts})`);
+expect(results.resume.classes.dismissed,
+       "resume: the second greeting must hand the page back too");
+expect(results.shortAway.resumed
+       && results.shortAway.resumeFrames === 0 && results.shortAway.resumeCues === 0,
+       "shortAway: a four-second glance at another app is not an open");
+expect(results.busy.classes.dismissed && results.busy.cues > 0,
+       "busy: a render in flight must still be greeted, briefly");
+expect(results.busy.endedWall !== null && results.busy.endedWall <= 3.6,
+       `busy: the short greeting took ${results.busy.endedWall}s — about two, not six`);
+expect(results.busy.classes.lockupIn,
+       "busy: the short greeting must still land the QYRO wordmark");
+expect(results.busyProvider.endedWall !== null && results.busyProvider.endedWall <= 3.6,
+       `busyProvider: setBusyProvider() never reached play() `
+       + `(${results.busyProvider.endedWall}s)`);
+expect(results.startHidden.contextsAtResume === 0,
+       "startHidden: an ident was built for a page nobody could see");
+expect(results.startHidden.resumed && results.startHidden.contexts === 1
+       && results.startHidden.cues > 20,
+       "startHidden: the greeting owed to a hidden load was never given");
+expect(results.startHidden.resumeFrames > 40,
+       "startHidden: nothing was painted once the page became visible");
+expect(results.startHidden.classes.dismissed,
+       "startHidden: the late greeting still has to hand the page back");
 
 expect(results.desktop.classes.dim, "desktop: the fade-out class never arrived");
 expect(results.desktop.classes.lockupIn && results.desktop.classes.lockupTag,

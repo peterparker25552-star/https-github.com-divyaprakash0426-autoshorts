@@ -74,10 +74,14 @@ class VersionTests(unittest.TestCase):
         self.assertIn('"/static/intro.js"', SW_JS)
 
     def test_a_seen_session_hides_the_stage_without_playing(self):
-        boot = INTRO_JS[INTRO_JS.index("boot() {"):]
-        boot = boot[: boot.index("\n    },")]
+        """v0.6.8 moved this into bootIdent() and taught it the difference
+        between a launch and a reload; the seen-away half is unchanged."""
+        boot = INTRO_JS[INTRO_JS.index("function bootIdent(options) {"):]
+        boot = boot[: boot.index("\n  }")]
         self.assertIn('overlay.classList.add("dismissed", "live")', boot,
                       "returning visitors must never wait for the fail-safe fade")
+        self.assertIn("if (!forced && !launched &&", boot,
+                      "…and a genuine open of the app must still be greeted")
 
     def test_ident_script_loads_before_the_app(self):
         html = INDEX_HTML
@@ -243,7 +247,7 @@ class IdentModuleTests(unittest.TestCase):
         for dead in ("introAudioContext", "scheduleIntroSound", "introTone",
                      "introWhoosh", "fadeIntroSound", "introAudioCancelled"):
             self.assertNotIn(dead, APP_JS, f"{dead} should live only in intro.js")
-        self.assertIn("window.QyroIdent.boot()", APP_JS)
+        self.assertIn("window.QyroIdent.boot(", APP_JS)
         self.assertIn('$("#identBtn").addEventListener("click", replayIntro)', APP_JS)
 
 
