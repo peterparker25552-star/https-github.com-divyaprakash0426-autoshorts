@@ -31,6 +31,7 @@ import re
 import shutil
 import subprocess
 import tempfile
+import time
 import unittest
 from pathlib import Path
 
@@ -748,6 +749,99 @@ class EngineCallTests(unittest.TestCase):
         _, _, notice = engine.ask_json("s", "u", self.SETTINGS, timeout=1)
         self.assertIn("free-tier limit", notice)
         self.assertIn("429", notice)
+
+
+# --------------------------------------------------------------------------
+# 5 — YouTube 429 handling: cookies, player client, and an honoured cooldown
+# --------------------------------------------------------------------------
+class YoutubeRateLimitTests(unittest.TestCase):
+    """A 429 on subtitle downloads must not hammer YouTube on an instant Retry.
+
+    YouTube's block outlives a single job; the old code failed after ~60 s and
+    a user who pressed Retry a minute later just re-triggered it. These tests
+    cover the two levers that actually get past the block (a logged-in
+    ``cookies.txt`` and a ``player_client`` override) and the cooldown note
+    that makes the "wait 10-15 minutes" message honest.
+    """
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.dir = Path(self.tmp.name)
+        self.addCleanup(self.tmp.cleanup)
+        self._cookies = config.COOKIES_FILE
+        self._client = config.YTDLP_PLAYER_CLIENT
+        self._state = config.RATE_LIMIT_STATE
+        self._subs = config.SUBS_DIR
+        self.addCleanup(setattr, config, "COOKIES_FILE", self._cookies)
+        self.addCleanup(setattr, config, "YTDLP_PLAYER_CLIENT", self._client)
+        self.addCleanup(setattr, config, "RATE_LIMIT_STATE", self._state)
+        self.addCleanup(setattr, config, "SUBS_DIR", self._subs)
+
+    def test_no_cookies_and_no_client_adds_nothing(self):
+        config.COOKIES_FILE = self.dir / "missing.txt"
+        config.YTDLP_PLAYER_CLIENT = ""
+        self.assertEqual(youtube._youtube_extractor_args(), [])
+
+    def test_a_cookies_file_is_passed_through(self):
+        cookies = self.dir / "cookies.txt"
+        cookies.write_text("# Netscape HTTP Cookie File\n", encoding="utf-8")
+        config.COOKIES_FILE = cookies
+        config.YTDLP_PLAYER_CLIENT = ""
+        self.assertEqual(youtube._youtube_extractor_args(),
+                         ["--cookies", str(cookies)])
+
+    def test_a_player_client_override_is_passed_through(self):
+        config.COOKIES_FILE = self.dir / "missing.txt"
+        config.YTDLP_PLAYER_CLIENT = "tv,web_safari"
+        self.assertEqual(youtube._youtube_extractor_args(),
+                         ["--extractor-args",
+                          "youtube:player_client=tv,web_safari"])
+
+    def test_the_cooldown_note_round_trips(self):
+        config.RATE_LIMIT_STATE = self.dir / ".rate-limit.json"
+        self.assertIsNone(youtube._rate_limit_remaining())
+        youtube._mark_rate_limited(30)
+        left = youtube._rate_limit_remaining()
+        self.assertIsNotNone(left)
+        self.assertGreater(left, 0)
+        self.assertLessEqual(left, 30)
+        # an expired note reads as clear, never a negative wait
+        youtube._mark_rate_limited(-1)
+        self.assertIsNone(youtube._rate_limit_remaining())
+
+    def test_an_active_cooldown_short_circuits_without_a_request(self):
+        config.RATE_LIMIT_STATE = self.dir / ".rate-limit.json"
+        config.SUBS_DIR = self.dir / "subs"
+        config.SUBS_DIR.mkdir(parents=True, exist_ok=True)
+        youtube._mark_rate_limited(60)
+        calls = []
+        original = youtube.run_ytdlp
+        youtube.run_ytdlp = lambda *a, **k: calls.append(a)
+        self.addCleanup(setattr, youtube, "run_ytdlp", original)
+        with self.assertRaises(youtube.TranscriptUnavailable) as caught:
+            youtube.get_transcript("vid1", "https://youtube.com/watch?v=vid1")
+        self.assertIn("still rate-limiting", str(caught.exception))
+        self.assertIn("minute", str(caught.exception))
+        self.assertEqual(calls, [], "a blocked retry must not touch YouTube")
+
+    def test_a_fresh_block_is_remembered_for_the_next_retry(self):
+        config.RATE_LIMIT_STATE = self.dir / ".rate-limit.json"
+        config.SUBS_DIR = self.dir / "subs"
+        config.SUBS_DIR.mkdir(parents=True, exist_ok=True)
+        original = youtube.run_ytdlp
+        youtube.run_ytdlp = lambda *a, **k: (_ for _ in ()).throw(
+            RuntimeError("yt-dlp failed: HTTP Error 429: Too Many Requests"))
+        self.addCleanup(setattr, youtube, "run_ytdlp", original)
+        # the pacer and the 30/60 s backoffs would make the test sleep ~90 s
+        self.addCleanup(setattr, youtube, "_pace", youtube._pace)
+        youtube._pace = lambda: None
+        self.addCleanup(setattr, youtube, "_RATE_LIMIT_BACKOFF",
+                        youtube._RATE_LIMIT_BACKOFF)
+        youtube._RATE_LIMIT_BACKOFF = 0.0
+        with self.assertRaises(youtube.TranscriptUnavailable):
+            youtube.get_transcript("vid1", "https://youtube.com/watch?v=vid1")
+        self.assertIsNotNone(youtube._rate_limit_remaining(),
+                             "a 429 block must be remembered for the next run")
 
 
 if __name__ == "__main__":

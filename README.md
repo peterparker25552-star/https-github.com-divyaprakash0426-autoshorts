@@ -421,10 +421,27 @@ Qyro deliberately trades a little speed for reliable caption fetching:
 - A thread-safe global pacer keeps every yt-dlp call at least **4 seconds** apart.
 - Caption languages are tried **one per request** (`en`, `hi`, `en-orig`, `en.*`, then `hi.*`) rather than in a burst.
 - yt-dlp also waits between subtitle and HTTP requests.
-- HTTP 429 / “Too Many Requests” responses trigger **20-second and 40-second backoffs** before the final attempt.
+- HTTP 429 / “Too Many Requests” responses trigger **30-second and 60-second backoffs** before the final attempt.
+- When YouTube still answers 429 after those attempts, Qyro **remembers the block for 10 minutes** (`data/.rate-limit.json`), so hitting *Retry* a minute later waits out the block instead of hammering YouTube again and restarting the timer. The job error tells you roughly how many minutes are left.
 - Successfully normalized transcripts are cached in `data/subs/`, so retries and later renders do not repeat completed caption work.
 
-If YouTube still reports a 429, wait **10–15 minutes** before retrying. Avoid repeatedly restarting jobs during that window; queued jobs run one at a time automatically.
+### Getting past a 429 for good
+
+A persistent 429 on subtitle downloads is YouTube bot-checking *anonymous*
+requests from your IP. Two things reliably clear it:
+
+1. **Update yt-dlp** — `pip install -U yt-dlp` (or `pipx upgrade yt-dlp`). YouTube
+   rotates which clients it challenges, and the fix is usually a newer extractor.
+2. **Add a logged-in session.** Export a Netscape-format `cookies.txt` from a
+   browser signed in to YouTube (the “Get cookies.txt LOCALLY” extension, in a
+   private window, works well) and save it at `data/cookies.txt`. Qyro passes it
+   to every yt-dlp call automatically, so caption and media downloads run as
+   your account instead of as an anonymous bot. Optionally force a different
+   player client with `AUTOSHORTS_PLAYER_CLIENT=tv,web_safari` when the default
+   `web` client is the one being challenged.
+
+If nothing is configured, wait **10–15 minutes** and retry; the block is
+IP-based and usually lifts on its own.
 
 ## How the highlight engine works (no API keys needed)
 
@@ -483,6 +500,8 @@ from, so the two can never disagree.
 | `AUTOSHORTS_FFMPEG` | Explicit path to an ffmpeg binary |
 | `AUTOSHORTS_PORT` | Port for `run.py` (default `8000`) |
 | `AUTOSHORTS_FONT` | Caption font family (default `DejaVu Sans`) |
+| `AUTOSHORTS_COOKIES` | Path to a Netscape `cookies.txt` for YouTube downloads (default `data/cookies.txt`) |
+| `AUTOSHORTS_PLAYER_CLIENT` | Override the yt-dlp player client (e.g. `tv,web_safari`) to dodge YouTube's bot check |
 | `OPENAI_API_KEY` / `OPENAI_BASE_URL` / `OPENAI_MODEL` | Optional OpenAI-compatible endpoint (the engine's "custom" provider) |
 
 Engine keys are usually set in **Settings** in the UI instead of the environment;
