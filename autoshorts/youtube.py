@@ -169,8 +169,56 @@ def fetch_video_meta(video_url: str) -> dict:
 _SUB_EXTENSIONS = (".json3", ".vtt", ".srt")
 _RATE_LIMIT_MESSAGE = (
     "YouTube is rate-limiting subtitle downloads (HTTP 429). Wait 10-15 "
-    "minutes and retry — transcripts are cached so no progress is lost."
+    "minutes and retry — transcripts are cached so no progress is lost. "
+    "To get past this for good, add a signed-in cookies.txt to data/ "
+    "(see the README's rate-limit section)."
 )
+_RATE_LIMIT_ATTEMPTS = 3        # subtitle passes before we give up and report
+_RATE_LIMIT_BACKOFF = 30.0      # first 429 backoff (seconds), doubles each pass
+_RATE_LIMIT_COOLDOWN = 10 * 60  # seconds an immediate Retry must wait it out
+
+
+def _youtube_extractor_args() -> list[str]:
+    """yt-dlp flags that make YouTube caption/media requests less likely to 429.
+
+    A logged-in ``cookies.txt`` is the reliable fix for YouTube's bot check on
+    anonymous subtitle downloads; ``AUTOSHORTS_PLAYER_CLIENT`` optionally swaps
+    the default ``web`` client for a less-guarded chain.
+    """
+    args: list[str] = []
+    cookies = config.COOKIES_FILE
+    if cookies and cookies.exists():
+        args += ["--cookies", str(cookies)]
+    client = config.YTDLP_PLAYER_CLIENT
+    if client:
+        args += ["--extractor-args", f"youtube:player_client={client}"]
+    return args
+
+
+def _rate_limit_remaining() -> float | None:
+    """Seconds until a previous 429 block expires, or ``None`` when clear.
+
+    A YouTube block outlives a single job; without this note a user who hits
+    Retry a minute later would hammer YouTube again and restart the timer.
+    """
+    try:
+        raw = json.loads(config.RATE_LIMIT_STATE.read_text(encoding="utf-8"))
+        until = float(raw.get("until", 0.0))
+    except Exception:
+        return None
+    left = until - time.time()
+    return left if left > 0 else None
+
+
+def _mark_rate_limited(seconds: float = _RATE_LIMIT_COOLDOWN) -> None:
+    """Remember that YouTube told us to back off (best-effort, never fatal)."""
+    try:
+        config.RATE_LIMIT_STATE.write_text(
+            json.dumps({"until": time.time() + seconds, "at": time.time()}),
+            encoding="utf-8",
+        )
+    except Exception:
+        pass
 
 
 def _subtitle_files(video_id: str) -> list[Path]:
@@ -202,10 +250,21 @@ def get_transcript(
     if segments:
         return segments, "cached"
 
+    # A previous run may have been blocked minutes ago; honour that window
+    # instead of hammering YouTube again the instant the user hits Retry.
+    remaining = _rate_limit_remaining()
+    if remaining is not None:
+        minutes = max(1, int(round(remaining / 60.0)))
+        raise TranscriptUnavailable(
+            "YouTube is still rate-limiting subtitle downloads (HTTP 429). "
+            f"Retry in about {minutes} minute(s) — transcripts are cached, so "
+            "no progress is lost."
+        )
+
     prefix = config.SUBS_DIR / video_id
     rate_limited_passes = 0
 
-    for attempt in range(3):
+    for attempt in range(_RATE_LIMIT_ATTEMPTS):
         hit_rate_limit = False
         for sub_lang in sub_lang_chain(language):
             _pace()
@@ -219,6 +278,7 @@ def get_transcript(
                         "--sleep-subtitles", "2",
                         "--sleep-requests", "1.5",
                         "--no-overwrites",
+                        *_youtube_extractor_args(),
                         "-o", str(prefix),
                         video_url,
                     ],
@@ -270,14 +330,15 @@ def get_transcript(
             return segments, source_name
 
         if hit_rate_limit:
-            if attempt < 2:
-                time.sleep(20 * (attempt + 1))
+            if attempt < _RATE_LIMIT_ATTEMPTS - 1:
+                time.sleep(_RATE_LIMIT_BACKOFF * (2 ** attempt))
             continue
         # A complete pass without a 429 tried every language; another pass
         # would only repeat the same no-caption result.
         break
 
-    if rate_limited_passes == 3:
+    if rate_limited_passes >= _RATE_LIMIT_ATTEMPTS:
+        _mark_rate_limited()
         raise TranscriptUnavailable(_RATE_LIMIT_MESSAGE)
     raise TranscriptUnavailable("No captions available for this episode")
 
@@ -347,6 +408,7 @@ def download_video(video_id: str, video_url: str) -> Path:
             "-f", "bv*[height<=720][ext=mp4]+ba[ext=m4a]/b[height<=720][ext=mp4]/b",
             "--merge-output-format", "mp4",
             "--no-part",
+            *_youtube_extractor_args(),
             "-o", str(tmp_out),
             video_url,
         ],

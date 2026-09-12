@@ -334,6 +334,25 @@ ENGINE_SETTINGS_KEYS = ("ai_provider", "ai_model", "ai_base_url")
 # Subtitle languages tried one at a time to avoid burst requests / HTTP 429s.
 SUB_LANG_CHAIN = ["en", "hi", "en-orig", "en.*", "hi.*"]
 
+# --- YouTube friendliness -----------------------------------------------------
+# YouTube rate-limits / bot-checks *anonymous* caption and media requests, which
+# is what the "HTTP 429" transcript failure is. Two levers make it go away:
+#
+# 1. A logged-in session. Drop a Netscape-format ``cookies.txt`` (exported from
+#    a browser that is signed in to YouTube, e.g. with the "Get cookies.txt
+#    LOCALLY" extension) at ``data/cookies.txt`` — or point ``AUTOSHORTS_COOKIES``
+#    at another path — and every yt-dlp call is made as that account.
+# 2. A different player client. YouTube challenges the default ``web`` client
+#    the hardest. ``AUTOSHORTS_PLAYER_CLIENT`` overrides it (e.g. ``tv,web_safari``);
+#    empty keeps yt-dlp's own default.
+COOKIES_FILE = Path(os.environ.get("AUTOSHORTS_COOKIES", DATA_DIR / "cookies.txt"))
+YTDLP_PLAYER_CLIENT = os.environ.get("AUTOSHORTS_PLAYER_CLIENT", "")
+
+# When YouTube answers a 429, Qyro notes the time so a job retried a minute
+# later waits out the block instead of hammering YouTube again and restarting
+# the timer. The state file lives in the data dir, so it is per-install.
+RATE_LIMIT_STATE = DATA_DIR / ".rate-limit.json"
+
 # Optional LLM refinement (any OpenAI-compatible endpoint). Off by default —
 # the built-in heuristic highlight engine works fully offline.
 LLM_API_KEY = os.environ.get("OPENAI_API_KEY", "")
