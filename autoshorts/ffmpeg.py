@@ -7,9 +7,11 @@ degrades to a safe fallback instead of raising.
 """
 from __future__ import annotations
 
+import json
 import math
 import re
 import subprocess
+import time
 import uuid
 from pathlib import Path
 
@@ -1752,24 +1754,195 @@ def frame_candidates(clip: Path | str, count: int, out_dir: Path,
 # --------------------------------------------------------------------------
 # Demo media synthesis (used when YouTube is unreachable)
 # --------------------------------------------------------------------------
+# A sidecar, not a metadata field: the placeholder must be recognisable from
+# the folder alone, because "download_video found a cached file" is exactly how
+# a test card could survive into a real render.
+DEMO_MARKER_SUFFIX = ".qyro-demo.json"
+
+
+def demo_marker(media: Path) -> Path:
+    """The sidecar path that flags ``media`` as Qyro's synthetic placeholder."""
+    return media.with_name(media.name + DEMO_MARKER_SUFFIX)
+
+
+def is_placeholder_media(media: Path | None) -> bool:
+    """True when this source file is Qyro's demo test card, not real footage."""
+    if not media:
+        return False
+    try:
+        return demo_marker(Path(media)).is_file()
+    except OSError:
+        return False
+
+
+def _drawtext_ready() -> bool:
+    """Does this ffmpeg build have drawtext (it needs libfreetype)?"""
+    global _DRAWTEXT_OK
+    if _DRAWTEXT_OK is None:
+        try:
+            proc = subprocess.run(
+                [config.FFMPEG_BIN, "-hide_banner", "-filters"],
+                capture_output=True, text=True, timeout=30,
+            )
+            _DRAWTEXT_OK = " drawtext " in f" {proc.stdout} "
+        except Exception:
+            _DRAWTEXT_OK = False
+    return bool(_DRAWTEXT_OK)
+
+
+_DRAWTEXT_OK: bool | None = None
+
+# The sentence the app and the marker use…
+DEMO_CAPTION = "DEMO - SYNTHETIC TEST MEDIA, NOT A REAL VIDEO"
+# …and what is burned into the picture. Deliberately *narrow*: a 9:16 centre
+# crop keeps only about a third of a 640-wide source, so a wide one-liner got
+# sliced to "...THETIC T..." on the crop style. Two short stacked lines survive
+# every framing (blur, crop, fill, smart) and every zoom.
+DEMO_OVERLAY = "DEMO\\N{\\fs16}NOT REAL FOOTAGE"
+
+
+def _label_end(seconds: int) -> tuple[int, int]:
+    """Minutes/seconds for the ASS end stamp, long enough to outlive the media."""
+    total = max(60, min(int(seconds) + 60, 3599))
+    return total // 60, total % 60
+
+
+def demo_label_ass(out_dir: Path, duration: int) -> Path | None:
+    """The "this is not footage" overlay, as a one-line ASS file.
+
+    libass is the machinery Qyro already depends on for captions, so the label
+    draws with the same fonts in the same places — unlike ``drawtext``, which
+    several builds (imageio's static wheel, for one) do not have at all.
+    Returns ``None`` when the scratch file cannot be written: the card is still
+    labelled by the sidecar marker and in the app itself.
+    """
+    text = DEMO_OVERLAY
+    minutes, seconds = _label_end(duration)
+    body = (
+        "[Script Info]\n"
+        "ScriptType: v4.00+\n"
+        "PlayResX: 640\n"
+        "PlayResY: 360\n"
+        "WrapStyle: 2\n"
+        "ScaledBorderAndShadow: yes\n"
+        "\n"
+        "[V4+ Styles]\n"
+        "Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, "
+        "OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, "
+        "ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, "
+        "MarginL, MarginR, MarginV, Encoding\n"
+        # BorderStyle 3 turns the outline into a rectangular plate behind the
+        # line (libass paints it in OutlineColour), so white-on-near-black stays
+        # readable on the cyan bar and on the dark blue one alike.
+        "Style: Demo,Arial,34,&H00FFFFFF,&H00FFFFFF,&HA0000000,&HA0000000,-1,"
+        "0,0,0,100,100,1,0,3,8,0,5,10,10,10,1\n"
+        "\n"
+        "[Events]\n"
+        "Format: Layer, Start, End, Style, Text\n"
+        f"Dialogue: 0,0:00:00.00,0:{minutes:02d}:{seconds:02d}.00,Demo,{text}\n"
+    )
+    try:
+        target = out_dir / f".qyro-demo-label-{int(time.time())}.ass"
+        target.write_text(body, encoding="utf-8")
+        return target
+    except OSError:
+        return None
+
+
 def synth_demo_video(out: Path, duration: int = 90, hue: int = 0) -> Path:
-    """Generate a placeholder 16:9 'episode' video with a talking-testcard look."""
-    if out.exists() and out.stat().st_size > 10_000:
-        return out
+    """Generate a placeholder 16:9 'episode' video with a talking-testcard look.
+
+    The label is the point: a bare ``testsrc2`` card with a sine tone looked
+    identical to a *broken* render, and users reasonably reported that Qyro
+    "only downloads a rainbow screen with a beep". The words are burned into
+    the source — so every short cut from it carries the label, in the file and
+    not just in the app — and the sidecar marker lets the download cache tell a
+    placeholder from real footage.
+    """
+    out = Path(out)
+    if out.exists() and out.stat().st_size > 10_000 and is_placeholder_media(out):
+        try:
+            cached = json.loads(demo_marker(out).read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            cached = {}
+        # A placeholder from an earlier run may be shorter than the transcript
+        # that is about to be cut against it, and a highlight window past its end
+        # renders an empty file. Re-synthesise when the lengths disagree.
+        if abs(float(cached.get("duration") or 0) - float(duration)) <= 1.0:
+            return out
     tone = 220 + hue  # distinct audio pitch per episode
-    vf = (
-        f"testsrc2=size=640x360:rate=15,hue=h={hue}:s=1.2"
-    )
-    _run(
-        [
-            "-f", "lavfi", "-i", vf,
-            "-f", "lavfi", "-i", f"sine=frequency={tone}:duration={duration}",
-            "-t", str(duration),
-            "-c:v", "libx264", "-preset", "veryfast", "-crf", "30",
-            "-c:a", "aac", "-b:a", "64k",
-            "-shortest",
-            str(out),
-        ],
-        timeout=600,
-    )
+    bare = f"testsrc2=size=640x360:rate=15,hue=h={hue}:s=1.2"
+
+    label = demo_label_ass(out.parent, duration)
+    chains: list[str] = []
+    if label:
+        # the same font folder libass is pointed at for captions, so the label
+        # draws on a phone with no system fontconfig database
+        from . import fonts as _fonts
+
+        font_path = ""
+        try:
+            font_path = _fonts.fontsdir()
+        except Exception:
+            font_path = ""
+        ass = f"ass={_escape_filter(str(label))}"
+        if font_path:
+            ass += f":fontsdir={_escape_filter(str(font_path))}"
+        chains.append(f"{bare},{ass}")
+    if _drawtext_ready():
+        chains.append(
+            bare + ",drawtext=text='DEMO':fontcolor=white:fontsize=56"
+            ":box=1:boxcolor=black@0.62:boxborderw=12:x=(w-text_w)/2:y=h*0.36"
+            ",drawtext=text='NOT REAL FOOTAGE':fontcolor=white:fontsize=20"
+            ":box=1:boxcolor=black@0.62:boxborderw=8:x=(w-text_w)/2:y=h*0.55"
+        )
+    # A white bar reads as "this is not content" on every build, and the bare
+    # card stays as the last resort so a demo render never fails on a filter.
+    chains.append(bare + ",drawbox=x=0:y=ih*0.42:w=iw:h=ih*0.16:"
+                          "color=white@0.92:t=fill")
+    chains.append(bare)
+
+    failure: RuntimeError | None = None
+    try:
+        for chain in chains:
+            try:
+                _run(
+                    [
+                        "-f", "lavfi", "-i", chain,
+                        "-f", "lavfi", "-i",
+                        f"sine=frequency={tone}:duration={duration}",
+                        "-t", str(duration),
+                        "-c:v", "libx264", "-preset", "veryfast", "-crf", "30",
+                        "-c:a", "aac", "-b:a", "64k",
+                        "-shortest",
+                        str(out),
+                    ],
+                    timeout=600,
+                )
+                failure = None
+                break
+            except RuntimeError as exc:
+                failure = exc
+        if failure is not None:
+            raise failure
+    finally:
+        if label:
+            try:
+                label.unlink(missing_ok=True)
+            except OSError:
+                pass
+
+    try:
+        demo_marker(out).write_text(
+            json.dumps({
+                "qyro_placeholder": True,
+                "duration": duration,
+                "hue": hue,
+                "note": DEMO_CAPTION,
+                "created": time.time(),
+            }),
+            encoding="utf-8",
+        )
+    except OSError:
+        pass   # the label in the pixels still stands; the marker is a bonus
     return out

@@ -323,11 +323,24 @@ def sub_lang_chain(language: str = "auto") -> list[str]:
 # Media
 # --------------------------------------------------------------------------
 def download_video(video_id: str, video_url: str) -> Path:
-    """Download a video at <=720p mp4 (cached)."""
+    """Download a video at <=720p mp4 (cached).
+
+    The cache honours a "already downloaded" file only if it is real footage:
+    a synthetic demo test card that once landed at this path must never be
+    handed to a YouTube render (that is how a colour-bar placeholder with a
+    sine beep ended up shipped as someone's short).
+    """
+    from . import ffmpeg as _ffmpeg
+
     _pace()
     dest = config.MEDIA_DIR / f"{video_id}.mp4"
     if dest.exists() and dest.stat().st_size > 10_000:
-        return dest
+        if not _ffmpeg.is_placeholder_media(dest):
+            return dest
+        # a placeholder in the real-media slot: drop it and download properly
+        for stale in config.MEDIA_DIR.glob(f"{video_id}.mp4*"):
+            if stale.suffix == ".mp4" or stale.name.endswith(".qyro-demo.json"):
+                stale.unlink(missing_ok=True)
     tmp_out = config.MEDIA_DIR / f"{video_id}.%(ext)s"
     run_ytdlp(
         [

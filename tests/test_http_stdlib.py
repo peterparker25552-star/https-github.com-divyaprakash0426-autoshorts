@@ -234,6 +234,21 @@ class ShortsFlowTests(StdlibServerBase):
         self.assertEqual(status, 200)
         self.assertIn("video/mp4", headers["Content-Type"])
         self.assertGreater(len(raw), 10_000)
+        # v0.6.6: the card's download link asks for an attachment (Android
+        # WebViews ignore a link's `download` attribute), while the URL the
+        # <video> element uses stays inline and playable.
+        inline = headers.get("Content-Disposition", "")
+        status, raw, headers = self.get(f"/api/clips/{clip['id']}/file?dl=1")
+        self.assertEqual(status, 200)
+        self.assertIn("attachment", headers.get("Content-Disposition", ""))
+        self.assertNotIn("attachment", inline)
+        # …and a short cut from synthetic demo media is labelled as such
+        self.assertEqual(clip.get("source"), "demo")
+        self.assertTrue(clip.get("demo_media"),
+                        "a demo render must be flagged on the clip itself")
+        marker = self.data_dir / "media" / "demo-chhetri-223.mp4.qyro-demo.json"
+        self.assertTrue(marker.is_file(),
+                        "the placeholder must be recognisable on disk")
         status, raw, headers = self.get(f"/api/clips/{clip['id']}/thumb")
         self.assertEqual(status, 200)
         self.assertIn("image/jpeg", headers["Content-Type"])

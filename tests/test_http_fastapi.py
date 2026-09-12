@@ -616,6 +616,14 @@ class ClipServingTests(WorkerFixture):
         resp = self.client.get(f"/api/clips/{self.clip_id}/file")
         self.assertEqual(resp.status_code, 200)
         self.assertIn("video/mp4", resp.headers["content-type"])
+        # ?dl=1 is the card's download button: an attachment disposition, so a
+        # WebView that ignores `download` still saves a file (v0.6.6). The
+        # plain URL stays inline for the <video> element on the same card.
+        self.assertNotIn("attachment",
+                         resp.headers.get("content-disposition", ""))
+        resp = self.client.get(f"/api/clips/{self.clip_id}/file?dl=1")
+        self.assertEqual(resp.status_code, 200)
+        self.assertIn("attachment", resp.headers.get("content-disposition", ""))
         resp = self.client.get(f"/api/clips/{self.clip_id}/thumb")
         self.assertEqual(resp.status_code, 200)
         self.assertIn("image/jpeg", resp.headers["content-type"])

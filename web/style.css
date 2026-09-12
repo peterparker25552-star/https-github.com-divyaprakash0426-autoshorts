@@ -961,6 +961,24 @@ code { font: 12px/1.4 var(--mono); color: var(--cyan); }
 }
 .noticeline .ic { margin-top: 1px; }
 .noticeline.info { border-color: rgba(159, 201, 255, 0.3); background: rgba(159, 201, 255, 0.07); color: #cfe4ff; }
+/* v0.6.6 — a short cut from Qyro's synthetic demo media says so on the card,
+   in the preview and on the file's own burned-in label. */
+.noticeline.demo {
+  border-color: rgba(251, 113, 133, 0.38);
+  background: rgba(251, 113, 133, 0.08);
+  color: #ffd9df;
+}
+.noticeline.demo b { color: #fff; }
+.demoflag {
+  display: flex; align-items: center; gap: 7px;
+  padding: 7px 11px;
+  border-bottom: 1px solid var(--line);
+  background: rgba(251, 113, 133, 0.12);
+  color: #ffc7d1;
+  font-size: 11px;
+  letter-spacing: 0.03em;
+}
+.demoflag .ic { flex: 0 0 auto; }
 .cutbar {
   display: flex; flex-wrap: wrap; align-items: center; gap: 9px;
   margin-top: 13px; padding-top: 12px; border-top: 1px solid var(--line);
@@ -1139,10 +1157,19 @@ code { font: 12px/1.4 var(--mono); color: var(--cyan); }
   background:
     radial-gradient(ellipse 70% 52% at 50% 38%, #0b0718 0%, #050310 48%, #010104 100%);
   color: #fff;
+  /* v6.6: opt-in, not opt-out. The stage is hidden until QyroIdent.play()
+     adds .live, so a page that never runs the ident script — a stale offline
+     shell, a blocked script, a reload that dies mid-parse — shows the app
+     instead of a black sheet over it. */
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+  transition: none;
+}
+.intro-overlay.live {
   opacity: 1;
   visibility: visible;
-  transition: opacity 0.86s cubic-bezier(0.22, 0.61, 0.36, 1),
-              visibility 0s linear 0.86s;
+  pointer-events: auto;
 }
 .intro-overlay.dim {
   opacity: 0.55;
@@ -1153,6 +1180,13 @@ code { font: 12px/1.4 var(--mono); color: var(--cyan); }
   visibility: hidden;
   pointer-events: none;
 }
+.intro-overlay.live.dismissed {
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+  transition: opacity 0.86s cubic-bezier(0.22, 0.61, 0.36, 1),
+              visibility 0s linear 0.86s;
+}
 /* Fail-safe: if web/intro.js never runs (a stale offline cache, a blocked
    script), the stage still clears itself instead of covering the app. The
    .live class is set once by QyroIdent.play() and never taken away. */
@@ -1160,7 +1194,17 @@ code { font: 12px/1.4 var(--mono); color: var(--cyan); }
   animation: introFailSafe 0.9s ease 6.5s both;
   pointer-events: none;
 }
+/* And the second one, for the case the first cannot cover: JS armed the stage
+   and then never got another frame back (a backgrounded tab, a CPU pegged by
+   ffmpeg). The module's own timer dismisses far sooner than this; this rule is
+   the reason "stuck" is no longer reachable even if that timer never runs. */
+.intro-overlay.live:not(.dismissed) {
+  animation: introHardHide 0.4s ease 12s both;
+}
 @keyframes introFailSafe {
+  to { opacity: 0; visibility: hidden; }
+}
+@keyframes introHardHide {
   to { opacity: 0; visibility: hidden; }
 }
 

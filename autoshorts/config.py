@@ -14,7 +14,7 @@ from pathlib import Path
 
 # --- Brand -----------------------------------------------------------------
 APP_NAME = "Qyro"
-APP_VERSION = "0.6.5"
+APP_VERSION = "0.6.6"
 APP_TAGLINE = "long podcasts → captioned vertical shorts"
 BRAND_CREDIT = "Made with Qyro"
 
@@ -231,6 +231,73 @@ GROQ_MODEL = "openai/gpt-oss-20b"
 GEMINI_MODEL = "gemini-3.6-flash"
 CUSTOM_MODEL = "gpt-4o-mini"
 AI_TIMEOUT = 25
+
+# --- v0.6.6 retired model ids -------------------------------------------------
+# A provider retiring an id is silent for the app until every call answers
+# ``404 … this model is no longer available to new users`` and the render is
+# demoted to the offline pack — which is exactly what users hit after Google
+# closed ``gemini-2.5-flash`` to new keys. The id Qyro wrote into an older
+# ``data/state.json`` keeps being replayed by the Settings form, so a stale
+# default could outlive the upgrade. Qyro therefore never *calls* a retired id
+# first: it calls the current default and keeps the user's value as a
+# second attempt (an older key may still be entitled to it).
+#
+# Keys are compared after :func:`normalise_model`, so ``models/gemini-2.5-flash``
+# (the shape Google echoes in errors) matches too.
+RETIRED_AI_MODELS = {
+    "gemini-2.0-flash": GEMINI_MODEL,
+    "gemini-2.0-flash-001": GEMINI_MODEL,
+    "gemini-2.0-flash-lite": GEMINI_MODEL,
+    "gemini-2.5-flash": GEMINI_MODEL,
+    "gemini-2.5-flash-lite": GEMINI_MODEL,
+    "gemini-2.5-flash-preview-05-20": GEMINI_MODEL,
+    "gemini-2.5-flash-preview-09-2025": GEMINI_MODEL,
+    "gemini-2.5-pro": GEMINI_MODEL,
+    "gemini-2.5-pro-exp-03-25": GEMINI_MODEL,
+    "llama-3.1-8b-instant": GROQ_MODEL,
+    "llama-3.3-70b-versatile": GROQ_MODEL,
+    "gemma2-9b-it": GROQ_MODEL,
+}
+# Whole generations that are gone: caught by prefix so a preview suffix or a
+# ``-latest`` alias cannot smuggle a dead id back in.
+RETIRED_AI_PREFIXES = ("gemini-1.", "gemini-2.")
+# The prefix Qyro's own free-tier default must keep up with. Anything in
+# RETIRED_AI_MODELS maps here.
+MODEL_PREFIX_STRIP = ("models/", "generativelanguage/")
+
+
+def normalise_model(value: object) -> str:
+    """Trim the resource prefix Google puts in front of ids in its errors."""
+    text = str(value or "").strip().strip("/")
+    for prefix in MODEL_PREFIX_STRIP:
+        if text.startswith(prefix):
+            text = text[len(prefix):]
+    return text
+
+
+def is_retired_model(value: object) -> bool:
+    """True when a model id is one the providers no longer serve to new keys."""
+    text = normalise_model(value)
+    if not text:
+        return False
+    if text in RETIRED_AI_MODELS:
+        return True
+    lowered = text.lower()
+    return any(lowered.startswith(prefix) for prefix in RETIRED_AI_PREFIXES)
+
+
+def replacement_model(value: object) -> str:
+    """The current id to use in place of a retired one ("" when unknown)."""
+    text = normalise_model(value)
+    if text in RETIRED_AI_MODELS:
+        return RETIRED_AI_MODELS[text]
+    lowered = text.lower()
+    if lowered.startswith("gemini-"):
+        return GEMINI_MODEL
+    if lowered.startswith(("llama-", "gemma", "mixtral")):
+        return GROQ_MODEL
+    return ""
+
 
 # --- v0.6.5 Google "AQ." auth keys ------------------------------------------
 # Google AI Studio now issues "Authentication keys" that start with ``AQ.``

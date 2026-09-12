@@ -768,11 +768,15 @@ function renderShorts() {
   $("#shortsGrid").innerHTML = clips.map((clip) => {
     const pack = clip.pack || null;
     const open = state.detailsOpen[`pack-${clip.id}`] ? " open" : "";
+    // Synthetic demo footage is labelled where it matters: on the short, not
+    // only on the episode card it came from (v0.6.6).
+    const demo = clip.demo_media || clip.source === "demo";
     return `
     <div class="clip" data-id="${clip.id}">
       <video controls preload="metadata" playsinline
              ${clip.thumb ? `poster="/api/clips/${clip.id}/thumb"` : ""}
              src="/api/clips/${clip.id}/file"></video>
+      ${demo ? `<div class="demoflag">${ic("alert")} demo media — test card, not a real video</div>` : ""}
       <div class="body">
         <div class="clip-title">${esc(clip.title)}</div>
         <div class="sub">From: <a href="https://www.youtube.com/watch?v=${esc(clip.episode_id)}&t=${Math.floor(clip.start || 0)}s" target="_blank" rel="noopener" title="${esc(clip.episode_title)}">${esc(trim(clip.episode_title, 42))}</a></div>
@@ -784,6 +788,7 @@ function renderShorts() {
         </div>
         ${signalBars(clip.breakdown)}
         ${clip.engine_notice ? `<div class="noticeline">${ic("alert")} ${esc(clip.engine_notice)}</div>` : ""}
+        ${demo ? `<div class="noticeline demo">${ic("alert")} This short was cut from Qyro's offline <b>demo</b> footage (a colour-bar test card with a tone). It is how the pipeline looks end to end — to make real shorts, paste a YouTube link above and press Generate.</div>` : ""}
         <div class="reasons">${(clip.reasons || []).map((reason) => `<span class="reason">${esc(reason)}</span>`).join("")}</div>
         ${pack ? `<details class="pack"${open}>
           <summary>${ic("text")} Upload pack${pack.polished_by ? ` · ${ic("sparkle")} ${esc(pack.polished_by)}` : ""}</summary>
@@ -794,7 +799,7 @@ function renderShorts() {
           </div>
         </details>` : ""}
         <div class="actions">
-          <a class="btn small" href="/api/clips/${clip.id}/file" download="qyro-${clip.id}.mp4">${ic("play")} Video</a>
+          <a class="btn small" href="/api/clips/${clip.id}/file?dl=1" download="qyro-${clip.id}.mp4">${ic("play")} Video</a>
           <a class="btn small" href="/api/clips/${clip.id}/srt">${ic("captions")} SRT</a>
           <a class="btn small" href="/api/clips/${clip.id}/audio.mp3">${ic("music")} MP3</a>
           <button class="btn small" onclick="openThumbPicker('${clip.id}')">${ic("image")} Thumb</button>
@@ -864,7 +869,10 @@ async function loadPlaylist() {
 async function loadDemo() {
   try {
     const result = await api("/api/demo/load", { method: "POST" });
-    toast(`Demo playlist loaded (${result.added} episodes) — hit Generate!`);
+    // Say up front what the footage is: demo shorts are cut from a synthetic
+    // test card, and nobody should meet that for the first time in a
+    // downloaded file.
+    toast(`Demo loaded (${result.added} episodes) — the pipeline runs on a labelled test card, not real video. Paste a YouTube link for real shorts.`, true);
   } catch (error) {
     toast(error.message, true);
   }
@@ -1761,12 +1769,15 @@ async function openInspector(clipId) {
         ${kv("File size", info.size_bytes ? fmtBytes(info.size_bytes) : "—")}
         ${kv("Quality preset", info.stored?.quality || "—")}
         ${kv("Captions", info.stored?.captions_brand && info.stored.captions_brand !== "none" ? info.stored.captions_brand : "plain")}
+        ${kv("Source media", info.stored?.source === "demo" ? "demo test card" : (info.source || "youtube"),
+             info.stored?.source === "demo" ? "Synthetic media Qyro generates for offline runs — not footage from YouTube." : "")}
       </div>
+      ${info.stored?.source === "demo" ? `<div class="noticeline demo">${ic("alert")} This short was cut from Qyro's synthetic demo media. The colour bars and the tone are the placeholder itself — load a YouTube link to render real footage.</div>` : ""}
       ${info.missing ? `<div class="noticeline">${ic("alert")} The file is not on disk — the card is stale; re-render or delete it.</div>` : ""}
       <div class="cutbar">
         <a class="btn small" href="/api/clips/${clipId}/audio.mp3">${ic("music")} Audio (MP3)</a>
         <button class="btn small" onclick="openThumbPicker('${clipId}')">${ic("image")} Thumbnail</button>
-        <a class="btn small" href="/api/clips/${clipId}/file" download="qyro-${clipId}.mp4">${ic("download")} Video</a>
+        <a class="btn small" href="/api/clips/${clipId}/file?dl=1" download="qyro-${clipId}.mp4">${ic("download")} Video</a>
       </div>`;
   } catch (error) {
     modalBody().innerHTML = `<div class="stepmsg error">${ic("alert")} ${esc(error.message)}</div>`;
@@ -1991,10 +2002,11 @@ async function openSettings() {
     <div class="stepmsg">Qyro writes titles offline and needs no account. If you add a free key, titles, hashtags and the upload pack get an AI rewrite — and any failure quietly falls back to offline text.</div>
     <div class="advgrid" style="margin-top:10px">
       <label class="full">Provider <select id="setProvider">${chosen(PROVIDER_OPTIONS, eng.provider || "offline")}</select></label>
-      <label>Model <input id="setModel" type="text" maxlength="120" placeholder="gemini-3.6-flash / llama-3.3-70b" value="${esc(eng.model || "")}"></label>
+      <label>Model <input id="setModel" type="text" maxlength="120" placeholder="gemini-3.6-flash / llama-3.3-70b" value="${esc(eng.model_effective || eng.model || "")}"></label>
       <label>Base URL (custom only) <input id="setBase" type="text" maxlength="300" placeholder="http://127.0.0.1:11434/v1" value="${esc(eng.base_url || "")}"></label>
       <label>Google AI Studio key <input id="setGemini" type="password" maxlength="400" placeholder="${s.gemini_key_set ? "saved \u2014 type to replace" : "AQ\u2026 or AIza\u2026"}" autocomplete="off"></label>
       <label class="full"><span class="hint">New Google keys start with <code>AQ.</code> (older ones with <code>AIza</code>) — both work: Qyro calls Google's own endpoint, the only route the new keys accept. Leave Model empty to follow the free-tier default.</span></label>
+      ${eng.model_note ? `<label class="full"><span class="noticeline">${ic("alert")} ${esc(eng.model_note)} <button class="btn small" id="setModelDefault" type="button">Follow the current default instead</button></span></label>` : ""}
       <label>Groq key <input id="setGroq" type="password" maxlength="400" placeholder="${s.groq_key_set ? "saved \u2014 type to replace" : "gsk_\u2026"}" autocomplete="off"></label>
       <label>OpenAI-compatible key <input id="setAi" type="password" maxlength="400" placeholder="${s.ai_key_set ? "saved \u2014 type to replace" : "optional"}" autocomplete="off"></label>
     </div>
@@ -2024,6 +2036,13 @@ async function openSettings() {
     identSound.checked = !window.QyroIdent || window.QyroIdent.soundEnabled();
     identSound.addEventListener("change", (event) => setIdentSound(event.target.checked));
   }
+  // A retired id in the Model box: one click empties it, and Qyro always calls
+  // the provider's current free-tier model from then on.
+  document.querySelector("#setModelDefault")?.addEventListener("click", () => {
+    const field = document.querySelector("#setModel");
+    if (field) field.value = "";
+    toast("Model cleared — save settings and Qyro follows the current default");
+  });
   document.querySelector("#setSave").addEventListener("click", async (event) => {
     const btn = event.currentTarget;
     const body = {
@@ -2144,8 +2163,19 @@ function identAvailable() {
   return !!window.QyroIdent;
 }
 
+/* The ident is a 6-second full-screen animation. It must never stand between
+ * someone and the render they are waiting for, so the auto-play is decided
+ * after the first /api/state: while a job is queued or running — which is when
+ * a phone is busiest and a reload is most likely — the app opens straight to
+ * the work. The header sparkle button and ?intro=1 always still play it. */
+function appIsBusy() {
+  const jobs = (state.data && state.data.jobs) || [];
+  return jobs.some((job) => job.status === "queued" || job.status === "running");
+}
+
 function initIntro() {
   if (!identAvailable()) return;
+  if (appIsBusy() && !/[?&]intro=1(&|$)/.test(location.search)) return;
   window.QyroIdent.boot();
 }
 
@@ -2186,7 +2216,6 @@ window.addEventListener("DOMContentLoaded", async () => {
   $("#settingsBtn").addEventListener("click", openSettings);
   $("#identBtn").addEventListener("click", replayIntro);
   setIdentSound(!window.QyroIdent || window.QyroIdent.soundEnabled());
-  initIntro();
   hydrateIcons();
   if ("serviceWorker" in navigator && location.protocol.startsWith("http")) {
     navigator.serviceWorker.register("/sw.js").catch(() => {});
@@ -2200,6 +2229,7 @@ window.addEventListener("DOMContentLoaded", async () => {
   if (!$("#playlistUrl").value && baseDefaults.playlist_url) {
     $("#playlistUrl").value = baseDefaults.playlist_url;
   }
+  initIntro();
   if ((state.data?.jobs || []).length) fastPoll();
   else pollTimer = setInterval(refresh, 8000);
 });

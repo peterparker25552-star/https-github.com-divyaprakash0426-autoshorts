@@ -17,6 +17,12 @@ autoplay-unlock dance and the CSS/markup contract) which runs
 against a stubbed DOM and WebAudio and asserts the ta-dum is really scheduled
 in step with the beams.
 
+v0.6.6 added ``test_units_v066``: the ident that can never strand the app
+(wall-clock catch-up, the dismissal timer, a hidden tab, a lost canvas, the
+reload cool-down — and the harness's starved-frame scenarios), the labelled
+demo placeholder that can never pass for a downloaded video, the ``?dl=1``
+download disposition, and the retired-model rescue in the free AI engine.
+
 Usage:  python -m tests.run_all   (or python tests/run_all.py from the repo)
 """
 from __future__ import annotations
@@ -74,6 +80,7 @@ def main() -> int:
         "tests.test_http_v060",
         "tests.test_units_v063",
         "tests.test_units_v065",
+        "tests.test_units_v066",
     ):
         suite.addTests(loader.loadTestsFromName(module))
     runner = unittest.TextTestRunner(verbosity=1)

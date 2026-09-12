@@ -13,8 +13,8 @@ import uuid
 from dataclasses import replace
 from pathlib import Path
 
-from . import (audioswap, beats, config, demo, engine, fonts, highlights,
-               logofx, quality)
+from . import (audioswap, beats, config, demo, engine, ffmpeg, fonts,
+               highlights, logofx, quality)
 from . import maintenance, titles, youtube
 from .ffmpeg import (
     extract_thumbnail,
@@ -238,7 +238,16 @@ class Pipeline:
     def _prepare_media(ep: dict) -> Path:
         if demo.is_demo(ep):
             return demo.prepare_demo_media(ep)
-        return youtube.download_video(ep["id"], ep["url"])
+        media = youtube.download_video(ep["id"], ep["url"])
+        if ffmpeg.is_placeholder_media(media):
+            # A file in the real-video slot that is actually the demo card:
+            # say it, do not cut a short out of it.
+            raise RuntimeError(
+                f"{Path(media).name} in data/media is Qyro's synthetic demo "
+                "placeholder, not the YouTube video. Delete that file and "
+                "generate again to download the real episode."
+            )
+        return media
 
     # ------------------------------------------------------------------
     def _generate_auto(self, ep: dict, params: dict, job_id: str) -> None:
@@ -509,6 +518,31 @@ class Pipeline:
             fontsdir=fonts.fontsdir(),
         )
 
+        # A render that produced no frames used to be filed as a finished short:
+        # the card appeared, the player stayed black and the download was a
+        # few hundred bytes of nothing. That happens when the cut window falls
+        # past the end of the source file (a stale or half-written
+        # data/media/<id>.mp4 does exactly that), so check the output and say
+        # what to do about it instead of shipping an empty clip.
+        if not clip_path.is_file() or clip_path.stat().st_size < 4096:
+            raise RuntimeError(
+                "The render produced no video — the source file is shorter than "
+                "the moment that was cut from it. Delete "
+                f"data/media/{Path(ep['id']).name}.mp4 and generate again."
+            )
+        try:
+            played = ffmpeg.probe_duration(clip_path) or 0.0
+        except Exception:
+            played = -1.0
+        if 0 <= played < 0.5:
+            clip_path.unlink(missing_ok=True)
+            raise RuntimeError(
+                "The render produced an unplayable file (no frames). The source "
+                f"data/media/{Path(ep['id']).name}.mp4 is probably truncated or "
+                "is a placeholder of a different length — delete it and generate "
+                "again."
+            )
+
         # 24 loudness bars for the card UI (empty list on any failure).
         try:
             waveform = loudness_waveform(clip_path)
@@ -611,6 +645,11 @@ class Pipeline:
                                         settings["height"]),
                 "engine": engine_name,
                 "engine_notice": engine_notice,
+                # v0.6.6 provenance: which footage this short was actually cut
+                # from. A demo render looked exactly like a real one, and the
+                # source's own placeholder card is the only thing on screen.
+                "source": str(ep.get("source") or "youtube"),
+                "demo_media": ffmpeg.is_placeholder_media(media),
                 "file": clip_path.name,
                 "thumb": thumb_path.name if thumb_path else None,
             }

@@ -78,7 +78,10 @@ def read(settings: dict | None) -> dict:
     base_url = str(settings.get("ai_base_url") or env["ai_base_url"]).strip()
     if not base_url and keys["custom"]:
         base_url = config.LLM_BASE_URL
-    model = str(settings.get("ai_model") or "").strip()
+    # Google writes its own ids as ``models/gemini-…`` in error messages, so a
+    # model copied out of one arrives with that prefix and every URL built from
+    # it is a double path segment. Strip it once, here, for every caller.
+    model = config.normalise_model(settings.get("ai_model"))
     return {
         "provider": provider,
         "model": model,
@@ -106,6 +109,54 @@ def chain(cfg: dict) -> list[str]:
     return [provider]
 
 
+def model_for(cfg: dict, provider: str) -> str:
+    """The id actually worth calling for ``provider`` right now.
+
+    The stored ``ai_model`` wins *unless* it names a model the provider has
+    retired — a value from an older ``state.json`` (or from the Settings form
+    re-posting what it was prefilled with) used to pin every render to a 404.
+    """
+    requested = config.normalise_model(cfg.get("model"))
+    default = _MODEL_DEFAULT.get(provider, "")
+    if requested and not config.is_retired_model(requested):
+        return requested
+    return default or requested
+
+
+def model_candidates(cfg: dict, provider: str) -> list[str]:
+    """Models to try for one provider, most likely to work first.
+
+    Two directions are covered on purpose:
+
+    * a **retired** id (any Gemini 2.x, Groq's retired ``llama-3.1-8b-instant``)
+      is demoted behind the provider's current default, so a key Google closed
+      that model for never blocks a render;
+    * a live-but-unusable id — a typo, a model retired *next* month — still
+      gets its honest first attempt, and Qyro's default follows it.
+    """
+    requested = config.normalise_model(cfg.get("model"))
+    default = _MODEL_DEFAULT.get(provider, "")
+    out: list[str] = []
+    if requested and not config.is_retired_model(requested):
+        out.append(requested)
+    if default and default not in out:
+        out.append(default)
+    if requested and requested not in out:
+        out.append(requested)
+    return out
+
+
+def retired_model_note(settings: dict | None) -> str:
+    """A one-line human explanation when the stored model id is retired."""
+    cfg = read(settings)
+    requested = config.normalise_model(cfg.get("model"))
+    if not requested or not config.is_retired_model(requested):
+        return ""
+    return (f"{requested} has been retired by its provider — Qyro calls "
+            f"{model_for(cfg, cfg['provider']) or 'the current free-tier model'} "
+            f"instead. Saving the settings below keeps the fix.")
+
+
 def public_state(settings: dict | None) -> dict:
     """What ``/api/state`` and the settings panel get — keys are never echoed."""
     cfg = read(settings)
@@ -118,9 +169,13 @@ def public_state(settings: dict | None) -> dict:
         }
         for name in ("offline", "gemini", "groq", "custom")
     ]
+    for entry in providers:
+        entry["model_effective"] = model_for(cfg, entry["id"]) or entry["model"]
     return {
         "provider": cfg["provider"],
         "model": cfg["model"],
+        "model_effective": model_for(cfg, cfg["provider"]) or cfg["model"],
+        "model_note": retired_model_note(settings),
         "base_url": cfg["base_url"],
         "label": _LABEL.get(cfg["provider"], "Offline templates"),
         "active": bool(chain(cfg)),
@@ -176,6 +231,78 @@ def _gemini_thinking(model: str) -> dict:
 
 _TRANSIENT_HTTP = (429, 500, 502, 503, 504)
 
+# What a provider says when the *model id* is the problem, as opposed to the
+# key, the quota or the network. Only these justify trying a second id.
+_DEAD_MODEL_HINTS = (
+    "no longer available",
+    "not available to new users",
+    "not found for api",
+    "was not found",
+    "is not found",
+    "unknown model",
+    "unsupported model",
+    "not supported",
+    "does not exist",
+    "deprecated",
+)
+_MESSAGE_FIELD = re.compile(r'"message"\s*:\s*"([^"]{4,300})"')
+
+
+def _error_status(reply: dict | None) -> int:
+    try:
+        return int((reply or {}).get("__status__") or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _dead_model(reply: dict | None) -> bool:
+    """True when the provider refused the model id itself (404/400 + wording)."""
+    if not isinstance(reply, dict) or "__error__" not in reply:
+        return False
+    if _error_status(reply) not in (400, 404):
+        return False
+    text = str(reply.get("__error__") or "").lower()
+    return any(hint in text for hint in _DEAD_MODEL_HINTS)
+
+
+def _humanise(reply: dict | None, provider: str, model: str) -> str:
+    """One readable sentence for a provider failure — never a JSON dump.
+
+    Users used to get the raw body pasted into a toast (``HTTP 404 { "error":
+    { … no longer available to new users … } }``), which says nothing about
+    what to do. The status is decoded instead, and the provider's own message —
+    the useful half of that body — is kept when there is one.
+    """
+    label = _LABEL.get(provider, provider)
+    raw = str((reply or {}).get("__error__") or "").strip()
+    message = ""
+    found = _MESSAGE_FIELD.search(raw)
+    if found:
+        message = " ".join(found.group(1).split())
+    status = _error_status(reply) or 0
+    # The number stays in every sentence: "HTTP 404" is what someone quotes
+    # when they ask for help, and it is what distinguishes a retired model
+    # from a bad key from an exhausted quota at a glance.
+    tag = f" (HTTP {status})" if status else ""
+    lowered = (message or raw).lower()
+    if status in (401, 403) or ("api key" in lowered and "not valid" in lowered):
+        return (f"{label} refused the API key{tag} — open Settings and paste "
+                f"the whole key again")
+    if status == 429 or "quota" in lowered or "rate limit" in lowered:
+        return f"{label} hit the free-tier limit{tag} — try again in a minute"
+    if status in (400, 404) and ("model" in lowered or not message):
+        return (f"{label} does not serve {model or 'that model'}{tag} — leave "
+                f"Model blank in Settings to follow the current free-tier "
+                f"default")
+    if message:
+        return f"{label}: {message[:200]}{tag}"
+    if status in _TRANSIENT_HTTP:
+        return f"{label} is unreachable right now{tag}"
+    if "urlopen error" in lowered or "timed out" in lowered or "ssl" in lowered:
+        return (f"{label} could not be reached from this machine — check the "
+                f"connection and try again")
+    return raw[:180] or f"{label} did not answer"
+
 
 def _post_json(url: str, payload: dict, headers: dict, timeout: float,
                retries: int | None = None) -> dict | None:
@@ -207,7 +334,8 @@ def _post_json(url: str, payload: dict, headers: dict, timeout: float,
                 detail = exc.read().decode("utf-8", "replace")[:200]
             except Exception:
                 pass
-            last_error = {"__error__": f"HTTP {exc.code} {_scrub(detail)}"}
+            last_error = {"__error__": f"HTTP {exc.code} {_scrub(detail)}",
+                          "__status__": exc.code}
             if exc.code in _TRANSIENT_HTTP and attempt + 1 < attempts:
                 time.sleep(config.AI_RETRY_BACKOFF)
                 continue
@@ -220,7 +348,7 @@ def _post_json(url: str, payload: dict, headers: dict, timeout: float,
                 continue
             return last_error
         if status != 200:
-            return {"__error__": f"HTTP {status}"}
+            return {"__error__": f"HTTP {status}", "__status__": status}
         try:
             parsed = json.loads(body)
         except Exception:
@@ -266,70 +394,108 @@ def _extract_json(content: str) -> dict | None:
     return None
 
 
+def _request_for(provider: str, model: str, system: str, user: str,
+                 cfg: dict, key: str) -> tuple[str, dict, dict]:
+    """``(url, payload, headers)`` for one call against one provider."""
+    if provider == "gemini":
+        base = config.GEMINI_BASE_URL.rstrip("/")
+        url = f"{base}/models/{model}:generateContent"
+        payload = {
+            "systemInstruction": {"parts": [{"text": system}]},
+            "contents": [{"role": "user", "parts": [{"text": user}]}],
+            "generationConfig": {
+                "temperature": 0.85,
+                "maxOutputTokens": 2048,
+                **_gemini_thinking(model),
+            },
+        }
+        # x-goog-api-key (not Bearer): it is what Google's own endpoint
+        # speaks, and the only header the new AQ. auth keys work with —
+        # on OpenAI-compatible Bearer routes they come back 400/401.
+        headers = {"x-goog-api-key": key}
+        return url, payload, headers
+    if provider == "groq":
+        base = cfg["base_url"] or config.GROQ_BASE_URL
+    else:
+        base = cfg["base_url"] or config.LLM_BASE_URL
+    url = f"{str(base).rstrip('/')}/chat/completions"
+    payload = {
+        "model": model,
+        "messages": [
+            {"role": "system", "content": system},
+            {"role": "user", "content": user},
+        ],
+        "temperature": 0.85,
+        "max_tokens": 1024,
+    }
+    headers = {"Authorization": f"Bearer {key}"}
+    return url, payload, headers
+
+
 def ask_json(system: str, user: str, settings: dict | None,
-             timeout: float = config.AI_TIMEOUT) -> tuple[dict | None, str, str]:
+             timeout: float = config.AI_TIMEOUT,
+             report: dict | None = None) -> tuple[dict | None, str, str]:
     """Ask the provider chain for one JSON object.
 
     Returns ``(data, provider, notice)`` — ``data`` is ``None`` when the whole
     chain failed (offline fallback is then the caller's job), ``provider`` names
     the one that answered, and ``notice`` is a short user-facing explanation.
+
+    Every provider is tried across the model ids worth calling (see
+    :func:`model_candidates`), so a retired id in the settings demotes itself
+    instead of failing the render. When ``report`` is passed it receives
+    ``provider``/``model`` (what answered) and ``replaced_model`` (what was
+    skipped because the provider retired it), which is how the upload pack and
+    the Settings panel tell the truth about which model wrote them.
     """
     cfg = read(settings)
     providers = chain(cfg)
     if not providers:
         return None, "offline", ""
+    if report is not None:
+        report["requested_model"] = str(cfg.get("model") or "")
     last_error = ""
     for name in providers:
         key = key_for(cfg, name)
         if not key:
             last_error = f"{_LABEL.get(name, name)} needs an API key"
             continue
-        model = cfg["model"] or _MODEL_DEFAULT.get(name, "")
-        if name == "gemini":
-            base = config.GEMINI_BASE_URL.rstrip("/")
-            url = f"{base}/models/{model}:generateContent"
-            payload = {
-                "systemInstruction": {"parts": [{"text": system}]},
-                "contents": [{"role": "user", "parts": [{"text": user}]}],
-                "generationConfig": {
-                    "temperature": 0.85,
-                    "maxOutputTokens": 2048,
-                    **_gemini_thinking(model),
-                },
-            }
-            # x-goog-api-key (not Bearer): it is what Google's own endpoint
-            # speaks, and the only header the new AQ. auth keys work with —
-            # on OpenAI-compatible Bearer routes they come back 400/401.
-            headers = {"x-goog-api-key": key}
-        else:
-            if name == "groq":
-                base = cfg["base_url"] or config.GROQ_BASE_URL
-            else:
-                base = cfg["base_url"] or config.LLM_BASE_URL
-            url = f"{str(base).rstrip('/')}/chat/completions"
-            payload = {
-                "model": model,
-                "messages": [
-                    {"role": "system", "content": system},
-                    {"role": "user", "content": user},
-                ],
-                "temperature": 0.85,
-                "max_tokens": 1024,
-            }
-            headers = {"Authorization": f"Bearer {key}"}
-        parsed = _post_json(url, payload, headers, timeout)
-        if not parsed:
-            last_error = "empty reply"
-            continue
-        if "__error__" in parsed:
-            last_error = str(parsed["__error__"])
-            continue
-        content = _chat_text(parsed)
-        data = _extract_json(content or "")
-        if data is None:
-            last_error = "the model did not return JSON"
-            continue
-        return data, name, ""
+        models = model_candidates(cfg, name) or [_MODEL_DEFAULT.get(name, "")]
+        swap_error = ""
+        for index, model in enumerate(models):
+            if not model:
+                continue
+            url, payload, headers = _request_for(name, model, system, user,
+                                                 cfg, key)
+            parsed = _post_json(url, payload, headers, timeout)
+            if not parsed:
+                last_error = f"{_LABEL.get(name, name)} replied with nothing"
+                continue
+            if "__error__" in parsed:
+                nxt = models[index + 1] if index + 1 < len(models) else ""
+                if _dead_model(parsed) and nxt:
+                    # The id is retired for this key: that is a *model*
+                    # problem, so the next candidate is worth the call. A bad
+                    # key or an empty quota is not, hence the break below.
+                    # The headline stays the failure of the model Qyro prefers
+                    # to use, not of the retired one it skipped past.
+                    if report is not None:
+                        report["replaced_model"] = model
+                        report["model"] = nxt
+                    swap_error = swap_error or _humanise(parsed, name, model)
+                    last_error = swap_error
+                    continue
+                last_error = swap_error or _humanise(parsed, name, model)
+                break
+            content = _chat_text(parsed)
+            data = _extract_json(content or "")
+            if data is None:
+                last_error = f"{model} replied, but not with JSON"
+                continue
+            if report is not None:
+                report["provider"] = name
+                report["model"] = model
+            return data, name, ""
     return None, "offline", last_error or "AI provider unavailable"
 
 
@@ -408,7 +574,8 @@ def title_variations(text, profile: str = "viral", count: int = config.TITLE_VAR
         + (f"Episode: {episode_title}\n" if episode_title else "")
         + f"Return exactly {count} titles."
     )
-    data, provider, notice = ask_json(system, user, settings)
+    report: dict = {}
+    data, provider, notice = ask_json(system, user, settings, report=report)
     titles_out = _clean_titles((data or {}).get("titles"), count) if data else []
     if len(titles_out) < 3:
         result["notice"] = notice or "AI reply was unusable — offline titles kept."
@@ -419,6 +586,7 @@ def title_variations(text, profile: str = "viral", count: int = config.TITLE_VAR
         "titles": merged[:count],
         "hashtags": (tags or base["hashtags"])[:12],
         "engine": provider,
+        "engine_model": report.get("model") or "",
         "notice": "",
         "keywords": base.get("keywords") or [],
     }
@@ -433,11 +601,14 @@ _PACK_SYSTEM = (
 
 
 def polish_pack(pack: dict, context: str = "", settings: dict | None = None,
-                timeout: float = config.AI_TIMEOUT) -> tuple[dict | None, str, str]:
+                timeout: float = config.AI_TIMEOUT,
+                report: dict | None = None) -> tuple[dict | None, str, str]:
     """Rewrite an upload pack through the engine.
 
     Returns ``(pack_or_None, provider, notice)`` — ``None`` pack means the
-    caller keeps the offline one.
+    caller keeps the offline one. ``report`` (optional) learns which model
+    actually answered, which is not always the one in the settings: a retired
+    id is called second, not first, so the pack can say so honestly.
     """
     cfg = read(settings)
     if not chain(cfg):
@@ -452,7 +623,9 @@ def polish_pack(pack: dict, context: str = "", settings: dict | None = None,
         "Improve this upload pack for a vertical short. Return JSON only.\n"
         + json.dumps(payload, ensure_ascii=False)
     )
-    data, provider, notice = ask_json(_PACK_SYSTEM, user, settings, timeout=timeout)
+    mine: dict = {}
+    data, provider, notice = ask_json(_PACK_SYSTEM, user, settings, timeout=timeout,
+                                      report=mine)
     if not data:
         return None, "offline", notice or "AI polish failed — offline pack kept."
     titles_out = _clean_titles(data.get("titles"), 3)
@@ -464,7 +637,16 @@ def polish_pack(pack: dict, context: str = "", settings: dict | None = None,
     polished["hashtags"] = _clean_tags(data.get("hashtags")) or list(
         (pack or {}).get("hashtags") or ["#shorts"])
     polished["description"] = re.sub(r"\s+\n", "\n", description.strip())[:4000]
-    polished["polished_by"] = f"{provider}:{cfg['model'] or _MODEL_DEFAULT.get(provider, '')}"
+    used = mine.get("model") or model_for(cfg, provider)
+    by = f"{provider}:{used}"
+    wanted = str(mine.get("requested_model") or "")
+    if wanted and wanted != used:
+        # name the swap, or the fix looks like it never happened
+        by += f" (settings said {wanted})"
+    polished["polished_by"] = by
+    polished["polished_model"] = used
+    if report is not None:
+        report.update(mine)
     return polished, provider, ""
 
 
