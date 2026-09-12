@@ -104,6 +104,7 @@ def api_health() -> dict:
         "llm_available": bool(engine.available(store.settings()) or llm.available()),
         "engine": engine.public_state(store.settings()),
         "options": maintenance.render_options_catalog(),
+        "youtube": maintenance.youtube_status(),
     }
 
 
@@ -356,6 +357,21 @@ def api_manual(ep_id: str, body: dict) -> dict:
 def api_audio_upload(body: dict) -> dict:
     """POST /api/audio — {name, data_b64} -> {track_id}."""
     return _service(maintenance.audio_upload, store, body)
+
+
+def api_cookies_status() -> dict:
+    """GET /api/cookies — is a YouTube session installed? (contents never sent)."""
+    return maintenance.cookies_status()
+
+
+def api_cookies_upload(body: dict) -> dict:
+    """POST /api/cookies — install a Netscape cookies.txt (kills the 429s)."""
+    return _service(maintenance.save_cookies, body)
+
+
+def api_cookies_clear() -> dict:
+    """DELETE /api/cookies — forget the installed YouTube session."""
+    return _service(maintenance.clear_cookies)
 
 
 def api_beats(ep_id: str, query: dict) -> dict:
@@ -683,6 +699,20 @@ class Handler(BaseHTTPRequestHandler):
                 raise ApiError(405, "Method not allowed")
             self._send_json(api_batch(body))
             return
+
+        # GET/POST/DELETE /api/cookies — the YouTube session that gets past
+        # HTTP 429 on caption downloads, installable straight from a phone.
+        if parts == ["cookies"]:
+            if method in ("GET", "HEAD"):
+                self._send_json(api_cookies_status())
+                return
+            if method == "POST":
+                self._send_json(api_cookies_upload(body))
+                return
+            if method == "DELETE":
+                self._send_json(api_cookies_clear())
+                return
+            raise ApiError(405, "Method not allowed")
 
         # POST /api/audio · GET /api/audio — user music beds (T3).
         # GET /api/audio/{id}/file streams one back for the UI player and

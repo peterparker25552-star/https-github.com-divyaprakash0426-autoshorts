@@ -323,6 +323,7 @@ const ICON_PATHS = {
   external: `<path d="M13.5 4.5H20v6.5M20 4.5l-8.5 8.5M18 14v4.2A1.8 1.8 0 0 1 16.2 20H5.8A1.8 1.8 0 0 1 4 18.2V7.8A1.8 1.8 0 0 1 5.8 6H10"/>`,
   text: `<path d="M4.5 6.5h15M4.5 11.5h15M4.5 16.5h9"/>`,
   folder: `<path d="M3.5 7.5A2 2 0 0 1 5.5 5.5H10l2 2.5h6.5a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2h-13a2 2 0 0 1-2-2z"/>`,
+  key: `<circle cx="8" cy="8" r="4"/><path d="M11 11l9 9M17 17l-2 2M14 14l-2 2"/>`,
 };
 
 function icon(name) {
@@ -454,12 +455,22 @@ function renderHealth(h) {
   const llm = h.llm_available;
   const disk = h.disk_free ? `${fmtBytes(h.disk_free)} free` : "disk ?";
   const engine = h.engine || {};
+  const ytInfo = h.youtube || {};
+  /* A standing subtitle block is why "Generate" keeps failing, so say it up
+     front instead of burying it in a job error the user has to trigger. */
+  const block = ytInfo.rate_limit || {};
+  const session = ytInfo.cookies || {};
   $("#health").innerHTML = `
     <span class="chip ${yt ? "ok" : "bad"}"><span class="dot"></span>YouTube ${yt ? "reachable" : "unreachable — demo mode"}</span>
     <span class="chip ${h.ffmpeg ? "ok" : "bad"}"><span class="dot"></span>ffmpeg ${h.ffmpeg ? "ready" : "missing"}</span>
     <span class="chip"><span class="dot"></span>${esc(disk)}</span>
     <span class="chip ${llm ? "ok" : ""}"><span class="dot"></span>${
       llm ? `AI: ${esc(engine.provider || "custom")}` : "AI off — offline titles"
+    }</span>
+    <span class="chip ${block.blocked ? "bad" : session.present ? "ok" : ""}"><span class="dot"></span>${
+      block.blocked
+        ? `YouTube 429 — transcripts paused ${block.minutes} min`
+        : session.present ? "YouTube session on" : "no YouTube session"
     }</span>`;
 }
 
@@ -677,6 +688,10 @@ function renderEpisodes() {
         <div class="progressbar"><div class="fill" style="width:${pct}%"></div></div>
         <div class="stepmsg">${esc(job?.message || job?.step || "working…")}</div>` : ""}
       ${ep.error ? `<div class="stepmsg error">${ic("alert")} ${esc(ep.error)}</div>` : ""}
+      ${isRateLimitError(ep.error) ? `
+        <div class="stepmsg">
+          <button class="btn small" onclick="openTools();switchToolTab('session')">${ic("key")} Fix this — add a YouTube session</button>
+        </div>` : ""}
       <div class="controls">
         <select class="opt-count" ${disabled} aria-label="Number of shorts">
           ${[1, 2, 3, 5, 8, 12].map((n) => `<option value="${String(n)}"${String(n) === String(opts.count) ? " selected" : ""}>${n} shorts</option>`).join("")}
@@ -1896,6 +1911,7 @@ async function openTools() {
       <button class="tab on" data-tab="tracks">${ic("music")} Music beds</button>
       <button class="tab" data-tab="titles">${ic("wand")} Title lab</button>
       <button class="tab" data-tab="engine">${ic("sparkle")} Free AI engine</button>
+      <button class="tab" data-tab="session">${ic("key")} YouTube session</button>
     </div>
     <div class="tabpanel" data-panel="tracks">
       <div class="stepmsg">Any MP3, M4A, WAV or OGG file on this device. Qyro loops it under the short — no cloud, no sample list.</div>
@@ -1918,6 +1934,9 @@ async function openTools() {
     <div class="tabpanel" data-panel="engine" hidden>
       <div id="engNote"></div>
       <div class="cutbar"><button class="btn small" id="engOpen">${ic("sliders")} Open settings</button></div>
+    </div>
+    <div class="tabpanel" data-panel="session" hidden>
+      <div id="sessNote"></div>
     </div>`, true);
   modalBody().querySelectorAll(".tab").forEach((tab) => tab.addEventListener("click", () => {
     modalBody().querySelectorAll(".tab").forEach((t) => t.classList.toggle("on", t === tab));
@@ -1955,6 +1974,91 @@ async function openTools() {
   document.querySelector("#engOpen").addEventListener("click", openSettings);
   titleLabFree();
   engineNote();
+  sessionNote();
+}
+
+/* A 429 is the one failure the user can actually cure, so the card that shows
+   the error also offers the cure instead of just "wait and retry". */
+function isRateLimitError(message) {
+  return /rate-limit|rate limit|too many requests|http 429/i.test(String(message || ""));
+}
+
+function switchToolTab(name) {
+  const tab = document.querySelector(`#modalRoot .tab[data-tab="${name}"]`);
+  if (tab) tab.click();
+}
+
+/* YouTube 429s on anonymous caption downloads are the one failure Qyro cannot
+   fix on its own — it needs a signed-in session. This is the only place a
+   phone user can supply one, so it doubles as the explanation of the block. */
+function sessionNote() {
+  const host = document.querySelector("#sessNote");
+  if (!host) return;
+  const yt = (state.health && state.health.youtube) || {};
+  const cookies = yt.cookies || {};
+  const block = yt.rate_limit || {};
+  host.innerHTML = `
+    <div class="probegrid">
+      <div class="kv"><span>YouTube session</span><b>${
+        cookies.present
+          ? `installed · ${cookies.lines} cookie(s)`
+          : "not installed — requests are anonymous"
+      }</b></div>
+      <div class="kv"><span>Subtitle block</span><b>${
+        block.blocked ? `${block.minutes} min cooldown` : "none"
+      }</b></div>
+    </div>
+    ${block.blocked
+      ? `<div class="noticeline">${ic("alert")} YouTube answered HTTP 429, so transcript downloads are paused for about ${block.minutes} more minute(s). Qyro will not hammer it while the block stands — and anything already fetched is cached.</div>`
+      : ""}
+    <div class="stepmsg">Export a Netscape <code>cookies.txt</code> from a browser signed in to YouTube (the “Get cookies.txt LOCALLY” extension, in a private window) and pick it below. Qyro then downloads captions and video as your account, which is what actually ends the 429s. The file never leaves this device and is never shown back to you.</div>
+    <label class="drop" id="cookieDrop"><input type="file" id="cookieFile" accept=".txt,text/plain">
+      ${ic("upload")} Tap to pick cookies.txt</label>
+    <div class="cutbar">
+      <button class="btn small" id="sessRemove"${cookies.present ? "" : " disabled"}>${ic("trash")} Remove session</button>
+      <span class="spacer"></span>
+      <button class="btn small" id="sessHelp">${ic("external")} How to export</button>
+    </div>
+    <div id="sessOut"></div>`;
+
+  document.querySelector("#cookieFile").addEventListener("change", async (event) => {
+    const picked = event.target.files && event.target.files[0];
+    if (!picked) return;
+    try {
+      const b64 = await fileToB64(picked);
+      const result = await api("/api/cookies", {
+        method: "POST", body: JSON.stringify({ name: picked.name, data_b64: b64 }),
+      });
+      toast(result.present
+        ? `YouTube session installed (${result.lines} cookies) — the block is cleared, generate again`
+        : "Session saved");
+      await refreshHealth();
+      renderHealth(state.health);
+      sessionNote();
+    } catch (error) {
+      toast(error.message, true);
+    }
+  });
+  document.querySelector("#sessRemove").addEventListener("click", async () => {
+    try {
+      await api("/api/cookies", { method: "DELETE" });
+      toast("YouTube session removed — requests are anonymous again");
+      await refreshHealth();
+      renderHealth(state.health);
+      sessionNote();
+    } catch (error) {
+      toast(error.message, true);
+    }
+  });
+  document.querySelector("#sessHelp").addEventListener("click", () => {
+    document.querySelector("#sessOut").innerHTML = `
+      <div class="tlines">
+        <div class="stepmsg"><b>Chrome / Edge / Brave</b> — install “Get cookies.txt LOCALLY”, open YouTube in a private window and sign in, click the extension, <i>Export</i> → <i>Export as cookies.txt</i>.</div>
+        <div class="stepmsg"><b>Firefox</b> — the same extension exists; export from the YouTube tab while signed in.</div>
+        <div class="stepmsg">Save the file anywhere on this device, then pick it above. That is the whole fix — no restart needed.</div>
+        <div class="stepmsg">No browser handy? Run <code>pip install -U yt-dlp</code>: YouTube rotates which clients it challenges and a newer extractor often clears the block on its own.</div>
+      </div>`;
+  });
 }
 
 function titleLabFree() {
@@ -2267,4 +2371,5 @@ window.openInspector = openInspector;
 window.openThumbPicker = openThumbPicker;
 window.openTitleLab = openTitleLab;
 window.openTools = openTools;
+window.switchToolTab = switchToolTab;
 window.openSettings = openSettings;

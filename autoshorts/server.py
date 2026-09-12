@@ -103,7 +103,32 @@ def health():
         "llm_available": bool(engine.available(store.settings()) or llm.available()),
         "engine": engine.public_state(store.settings()),
         "options": maintenance.render_options_catalog(),
+        "youtube": maintenance.youtube_status(),
     }
+
+
+@app.get("/api/cookies")
+def get_cookies():
+    """Is a YouTube session installed? (Never returns the file itself.)"""
+    return maintenance.cookies_status()
+
+
+@app.post("/api/cookies")
+def post_cookies(payload: dict = Body(...)):
+    """Install a Netscape cookies.txt — the lasting fix for HTTP 429."""
+    try:
+        return maintenance.save_cookies(payload)
+    except ServiceError as exc:
+        raise _fail(exc) from exc
+
+
+@app.delete("/api/cookies")
+def delete_cookies():
+    """Forget the installed YouTube session."""
+    try:
+        return maintenance.clear_cookies()
+    except ServiceError as exc:
+        raise _fail(exc) from exc
 
 
 @app.get("/api/state")
