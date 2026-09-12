@@ -7,7 +7,7 @@
  */
 // Bump this whenever the shell assets change so an installed PWA cannot keep
 // the previous intro/logo in its offline cache.
-const SHELL = "qyro-v0.6.8-shell";
+const SHELL = "qyro-v0.6.9-shell";
 const ASSETS = ["/", "/static/app.js", "/static/intro.js", "/static/style.css",
                 "/static/manifest.webmanifest",
                 "/static/icons/favicon.svg", "/static/icons/icon-192.png",

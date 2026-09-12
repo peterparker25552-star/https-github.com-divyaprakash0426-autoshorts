@@ -460,6 +460,14 @@ function renderHealth(h) {
      front instead of burying it in a job error the user has to trigger. */
   const block = ytInfo.rate_limit || {};
   const session = ytInfo.cookies || {};
+  /* A stale extractor is behind most caption failures Qyro cannot fix on its
+     own, so say it here — before the user has to trigger one to find out. */
+  const ytdlp = ytInfo.yt_dlp || {};
+  const ytdlpChip = !ytdlp.version || ytdlp.version === "missing"
+    ? `<span class="chip bad" title="yt-dlp is not installed — pip install yt-dlp"><span class="dot"></span>yt-dlp missing</span>`
+    : ytdlp.stale
+      ? `<span class="chip warn" title="YouTube changes constantly; an extractor this old stops finding captions. Run: pip install -U yt-dlp"><span class="dot"></span>yt-dlp ${ytdlp.age_days}d old — update</span>`
+      : `<span class="chip" title="yt-dlp ${esc(ytdlp.version)}, ${ytdlp.age_days == null ? "age unknown" : `${ytdlp.age_days} day(s) old`}"><span class="dot"></span>yt-dlp ${esc(ytdlp.version)}</span>`;
   $("#health").innerHTML = `
     <span class="chip ${yt ? "ok" : "bad"}"><span class="dot"></span>YouTube ${yt ? "reachable" : "unreachable — demo mode"}</span>
     <span class="chip ${h.ffmpeg ? "ok" : "bad"}"><span class="dot"></span>ffmpeg ${h.ffmpeg ? "ready" : "missing"}</span>
@@ -471,7 +479,8 @@ function renderHealth(h) {
       block.blocked
         ? `YouTube 429 — transcripts paused ${block.minutes} min`
         : session.present ? "YouTube session on" : "no YouTube session"
-    }</span>`;
+    }</span>
+    ${ytdlpChip}`;
 }
 
 function renderStats() {
@@ -1977,10 +1986,14 @@ async function openTools() {
   sessionNote();
 }
 
-/* A 429 is the one failure the user can actually cure, so the card that shows
-   the error also offers the cure instead of just "wait and retry". */
+/* A caption refusal is the failure the user can actually cure, so the card
+   that shows the error also offers the cure instead of just "retry later".
+   v0.6.9 widened this past HTTP 429: a bot check and a withheld caption track
+   (YouTube's "PO Token" skip) are cured by the same signed-in session, and
+   both used to arrive disguised as "No captions available for this episode". */
 function isRateLimitError(message) {
-  return /rate-limit|rate limit|too many requests|http 429/i.test(String(message || ""));
+  return /rate-limit|rate limit|too many requests|http 429|bot check|po token|cookies\.txt/i
+    .test(String(message || ""));
 }
 
 function switchToolTab(name) {
@@ -1997,6 +2010,7 @@ function sessionNote() {
   const yt = (state.health && state.health.youtube) || {};
   const cookies = yt.cookies || {};
   const block = yt.rate_limit || {};
+  const ytdlp = yt.yt_dlp || {};
   host.innerHTML = `
     <div class="probegrid">
       <div class="kv"><span>YouTube session</span><b>${
@@ -2007,7 +2021,13 @@ function sessionNote() {
       <div class="kv"><span>Subtitle block</span><b>${
         block.blocked ? `${block.minutes} min cooldown` : "none"
       }</b></div>
+      <div class="kv"><span>yt-dlp</span><b>${
+        !ytdlp.version || ytdlp.version === "missing"
+          ? "not installed — pip install yt-dlp"
+          : `${esc(ytdlp.version)}${ytdlp.age_days == null ? "" : ` · ${ytdlp.age_days} day(s) old`}${ytdlp.stale ? " · update it" : ""}`
+      }</b></div>
     </div>
+    ${ytdlp.stale ? `<div class="noticeline">${ic("alert")} yt-dlp is ${ytdlp.age_days} days old. YouTube changes its player constantly and an extractor this old stops finding captions long before it stops working for anything else — run <code>pip install -U yt-dlp</code> and restart Qyro.</div>` : ""}
     ${block.blocked
       ? `<div class="noticeline">${ic("alert")} YouTube answered HTTP 429, so transcript downloads are paused for about ${block.minutes} more minute(s). Qyro will not hammer it while the block stands — and anything already fetched is cached.</div>`
       : ""}

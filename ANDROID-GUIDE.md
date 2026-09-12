@@ -86,7 +86,7 @@ downloaded):
 
 ```
 ============================================================
-  ✅ Qyro v0.6.8 is installed!
+  ✅ Qyro v0.6.9 is installed!
 
   TO START IT (any time):
      open Termux and type:  bash ~/start-autoshorts.sh
@@ -251,6 +251,53 @@ pip install -U yt-dlp
 ```
 YouTube changes often; keeping `yt-dlp` current is what fixes most download
 errors. Demo mode works with no internet at all, so you can still try the app.
+
+**"Transcript unavailable: No captions available for this episode"**
+First, update — v0.6.9 fixed what this message means:
+```
+cd ~/autoshorts
+git pull
+pip install -U yt-dlp
+bash ~/start-autoshorts.sh
+```
+Until v0.6.9, Qyro used that one sentence for *every* caption failure,
+including the ones that were not the episode's fault: YouTube refusing an
+anonymous phone its captions, a bot check, a flaky mobile connection, or a
+`yt-dlp` too old to read YouTube's current player. The episode usually did have
+captions. From v0.6.9 the message says which of those it was and what to do, so
+generate again and read it.
+
+Then, in order:
+
+1. **Update `yt-dlp`** (`pip install -U yt-dlp`) and restart Qyro. YouTube
+   changes its player weekly; on a phone this is the most common cause by far,
+   and the health strip at the top of the app now says when your copy is too old
+   to trust (an amber `yt-dlp …d old — update` chip).
+2. **Add a YouTube session** if the message mentions a *bot check* or
+   *withheld* captions: on a computer, sign in to YouTube in Chrome, install the
+   "Get cookies.txt LOCALLY" extension, export `cookies.txt`, send that file to
+   the phone (Drive/Telegram/email), then in Qyro open **Tools ▸ YouTube
+   session** and pick it. The episode card also shows a **Fix this — add a
+   YouTube session** button when that is the cure. Nothing is uploaded anywhere;
+   the file stays on the phone.
+3. **Check the connection** if the message mentions the servers not being
+   reached. Some mobile carriers, campuses and offices block YouTube's API even
+   though the YouTube app works. Transcripts already fetched stay cached, so
+   nothing finished is lost.
+4. **Try another episode** if the message says the video is private, removed or
+   not available in your country — no setting changes that.
+5. **Still want a short from that episode?** Use **Exact range** on the episode
+   card and type a start and end time: a manual clip renders fine with no
+   transcript at all (it just has no burned-in captions).
+
+To see the whole diagnosis at once, in Termux:
+```
+cd ~/autoshorts
+python tools/check_transcript.py --live "https://www.youtube.com/watch?v=VIDEOID"
+```
+It prints your `yt-dlp` version and age, whether a session is installed, which
+caption tracks the episode really has, then fetches one and says exactly what
+went wrong.
 
 **"I only get a rainbow screen with a beep"**
 There are two things that look like this, and neither is a broken video:

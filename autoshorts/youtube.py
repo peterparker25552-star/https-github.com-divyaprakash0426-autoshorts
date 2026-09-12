@@ -3,9 +3,14 @@
 Everything here runs yt-dlp as a subprocess so the system ffmpeg flag and
 timeouts stay explicit. Functions raise RuntimeError with a readable message
 so the API layer can surface errors in the UI.
+
+A caption fetch that comes back empty is *diagnosed* here, not guessed at: see
+the ``KIND_*`` taxonomy below. "No captions available" is a claim about the
+video, and it is only made once yt-dlp's own metadata for the episode agrees.
 """
 from __future__ import annotations
 
+import datetime
 import json
 import re
 import shutil
@@ -75,14 +80,22 @@ def run_ytdlp(
 
     A YouTube 429 raises :class:`RateLimited` (still a ``RuntimeError``) so a
     caller can tell "blocked" apart from "this video has no captions".
+
+    Caption calls keep yt-dlp's warnings on purpose. YouTube's refusals are
+    *warnings* — "Some web client subtitles require a PO Token … they will be
+    discarded", "Skipping unsupported client", "Sign in to confirm you're not a
+    bot" — and ``--no-warnings`` deleted the only evidence of them, which is how
+    a refused caption track came to be reported as "this episode has no
+    captions". Everything else stays quiet so ``-J`` output remains clean JSON.
     """
     common = [
-        "--no-warnings",
         "--no-playlist-reverse",
         "--socket-timeout", "15",
         "--retries", str(max(0, int(retries))),
         "--ffmpeg-location", config.FFMPEG_BIN,
     ]
+    if not is_caption_call(args):
+        common.insert(0, "--no-warnings")
     exe = _ytdlp()
     cmd = ([sys_python(), "-m", "yt_dlp"] if exe is None else [exe]) + common + args
     try:
@@ -123,10 +136,214 @@ def is_rate_limit_error(text: str) -> bool:
     return bool(_HTTP_429.search(low)) and ("http" in low or "error" in low)
 
 
+# --------------------------------------------------------------------------
+# Why a caption request failed — the taxonomy behind every message in the app
+# --------------------------------------------------------------------------
+# Until v0.6.9 there were two outcomes: an HTTP 429, and "No captions
+# available for this episode". Everything else — a bot check, a TLS reset, an
+# extractor too old to parse YouTube, a private video, and above all YouTube
+# *refusing* an anonymous client caption tracks the episode plainly has (a
+# "PO Token" skip, which yt-dlp reports as a warning and exits 0 for) — was
+# folded into that second answer, which is a claim about the video. It was
+# wrong most of the time, it stopped the player-client rotation dead after one
+# client, and it sent users looking for captions that existed instead of
+# installing the session that would fetch them.
+KIND_OK = "ok"
+KIND_NO_CAPTIONS = "no_captions"    # asked cleanly; the episode has no such track
+KIND_PO_TOKEN = "po_token"          # captions exist, withheld without a token
+KIND_RATE_LIMIT = "rate_limit"      # HTTP 429
+KIND_BOT_CHECK = "bot_check"        # "Sign in to confirm you're not a bot"
+KIND_VIDEO = "video_unavailable"    # private / removed / age- or region-locked
+KIND_NETWORK = "network"            # DNS, TLS, timeout — this machine's problem
+KIND_EXTRACTOR = "extractor"        # yt-dlp could not parse YouTube: update it
+KIND_UNKNOWN = "unknown"
+
+# Which of two failures is worth reporting: the more specific cause wins, and
+# "the episode has no captions" is the weakest claim of all, because it is the
+# one that needs proof.
+_KIND_PRIORITY = (
+    KIND_RATE_LIMIT, KIND_VIDEO, KIND_BOT_CHECK, KIND_PO_TOKEN,
+    KIND_EXTRACTOR, KIND_NETWORK, KIND_UNKNOWN, KIND_NO_CAPTIONS, KIND_OK,
+)
+
+# A caption call is one that writes or lists subtitle files: those keep
+# yt-dlp's warnings, because a refusal only ever shows up as one.
+_CAPTION_FLAGS = ("--write-subs", "--write-auto-subs", "--list-subs",
+                  "--all-subs", "--write-automatic-subs")
+
+
+def is_caption_call(args) -> bool:
+    """True when these yt-dlp ``args`` are asking for subtitle files."""
+    return any(str(flag) in _CAPTION_FLAGS for flag in (args or []))
+
+
+_VIDEO_MARKERS = (
+    "video unavailable", "this video is unavailable", "private video",
+    "this video is private", "has been removed", "no longer available",
+    "not available in your country", "not available in your region",
+    "not made this video available", "available in your country",
+    "members-only", "join this channel", "age-restricted",
+    "sign in to confirm your age", "this video is not available",
+    "is a live stream", "is currently live", "scheduled for",
+)
+_BOT_CHECK_MARKERS = (
+    "sign in to confirm", "not a bot", "please sign in", "sign in to youtube",
+    "login required", "log in to confirm", "authentication required",
+    "cookies are required", "http error 403", "forbidden",
+)
+_PO_TOKEN_MARKERS = (
+    "po token", "po_token", "potoken", "will be discarded",
+    "missing subtitles languages", "subtitles for these languages are missing",
+    "there are missing subtitles",
+)
+_NETWORK_MARKERS = (
+    "tls/ssl", "ssl:", "sslerror", "eof occurred", "connection",
+    "timed out", "timeout", "unreachable", "name resolution",
+    "temporary failure", "urlopen error", "remote end closed", "reset by peer",
+    "unable to download api page", "http error 5", "bad gateway",
+    "service unavailable", "no route to host",
+)
+_EXTRACTOR_MARKERS = (
+    "unable to extract", "failed to extract", "cannot extract", "nsig",
+    "n-sig", "signature", "unsupported url", "report this issue",
+    "unsupported client", "skipping unsupported client", "javascript runtime",
+    "unable to download video metadata", "unable to download webpage",
+)
+_JS_RUNTIME_MARKER = "javascript runtime"
+
+
+def worse_kind(*kinds: str) -> str:
+    """The most informative of several failure kinds."""
+    present = [kind for kind in kinds if kind and kind != KIND_OK]
+    if not present:
+        return KIND_OK
+    return min(present, key=lambda kind: _KIND_PRIORITY.index(kind)
+               if kind in _KIND_PRIORITY else len(_KIND_PRIORITY))
+
+
+def classify_failure(text: str) -> str:
+    """Which kind of failure a yt-dlp *error* describes.
+
+    Order matters: a 429 is the one YouTube says in numbers, a video-level
+    refusal ("private", "not available in your country") must not be read as a
+    bot check just because it also says "sign in", and a TLS reset must not be
+    read as an extractor bug just because yt-dlp asks to be updated at the end
+    of every error it prints.
+    """
+    low = str(text or "").lower()
+    if not low.strip():
+        return KIND_UNKNOWN
+    if is_rate_limit_error(low):
+        return KIND_RATE_LIMIT
+    for markers, kind in (
+        (_VIDEO_MARKERS, KIND_VIDEO),
+        (_PO_TOKEN_MARKERS, KIND_PO_TOKEN),
+        (_BOT_CHECK_MARKERS, KIND_BOT_CHECK),
+        (_NETWORK_MARKERS, KIND_NETWORK),
+        (_EXTRACTOR_MARKERS, KIND_EXTRACTOR),
+    ):
+        if any(marker in low for marker in markers):
+            return kind
+    return KIND_UNKNOWN
+
+
+def classify_caption_output(text: str) -> str:
+    """Read a caption pass that *exited 0* — the silent failures live here.
+
+    This is the case v0.6.8 had no answer for. YouTube refuses an anonymous
+    ``web`` client the caption tracks it plainly has, yt-dlp discards them with
+    a warning, prints ``[info] There are no subtitles for the requested
+    languages`` and exits **0**: a clean run with nothing on disk. Only the
+    warning says what really happened.
+    """
+    low = str(text or "").lower()
+    if not low.strip():
+        return KIND_NO_CAPTIONS
+    if any(marker in low for marker in _PO_TOKEN_MARKERS):
+        return KIND_PO_TOKEN
+    if is_rate_limit_error(low):
+        return KIND_RATE_LIMIT
+    if any(marker in low for marker in _BOT_CHECK_MARKERS):
+        return KIND_BOT_CHECK
+    return KIND_NO_CAPTIONS
+
+
+def detail_line(text: str, limit: int = 220) -> str:
+    """The one line of yt-dlp output worth showing a user, trimmed."""
+    best = ""
+    for line in str(text or "").splitlines():
+        stripped = line.strip()
+        if not stripped:
+            continue
+        # The most specific line wins: an ERROR beats a WARNING beats anything.
+        if stripped.startswith("ERROR"):
+            best = stripped
+            break
+        if stripped.startswith("WARNING") and not best.startswith("ERROR"):
+            best = stripped
+        elif not best:
+            best = stripped
+    best = best.replace("yt-dlp failed:", "").strip()
+    # yt-dlp appends two boilerplate tails to most of its errors: a
+    # "(caused by …)" repeat of the same failure and a "please report this
+    # issue" link. Both are noise next to the one line that actually
+    # diagnoses anything, and both eat the space a message has.
+    best = re.split(r";?\s*please report this issue", best)[0]
+    best = re.sub(r"\s*\(caused by .*\)\s*$", "", best)
+    best = re.sub(r"\s{2,}", " ", best).strip(" .;")
+    if len(best) > limit:
+        best = best[: limit - 1].rstrip() + "…"
+    return best
+
+
 def sys_python() -> str:
     import sys
 
     return sys.executable or "python3"
+
+
+def ytdlp_version() -> str:
+    """The installed yt-dlp's version string (``""`` when it is not there)."""
+    try:
+        from yt_dlp.version import __version__  # type: ignore
+
+        return str(__version__ or "")
+    except Exception:
+        return ""
+
+
+def ytdlp_age_days(version: str | None = None) -> int | None:
+    """How many days old the installed yt-dlp is, or ``None`` if unparseable.
+
+    yt-dlp versions are calendar dates (``2026.08.19``), which makes "how old
+    is this extractor" a real question — and the first one to ask when YouTube
+    stops handing over captions, because a stale extractor is the cause often
+    enough that every caption failure message names the age.
+    """
+    text = str(version if version is not None else ytdlp_version()).strip()
+    parts = text.split(".")
+    if len(parts) < 3:
+        return None
+    try:
+        year, month, day = int(parts[0]), int(parts[1]), int(parts[2])
+        released = datetime.date(year, month, day)
+    except (TypeError, ValueError):
+        return None
+    age = (datetime.date.today() - released).days
+    return age if age >= 0 else None
+
+
+def ytdlp_status() -> dict:
+    """UI-safe view of the installed extractor: version, age, and staleness."""
+    version = ytdlp_version()
+    age = ytdlp_age_days(version)
+    return {
+        "version": version or "missing",
+        "age_days": age,
+        "stale_days": int(config.YTDLP_STALE_DAYS),
+        "stale": bool(age is not None and age > int(config.YTDLP_STALE_DAYS)),
+        "present": bool(version),
+    }
 
 
 def check_reachable(timeout: float = 6.0) -> bool:
@@ -248,14 +465,25 @@ def _youtube_extractor_args(client: str | None = None) -> list[str]:
 
 
 def player_client_chain() -> list[str]:
-    """Player clients to try, in order, the configured one first."""
+    """Player clients to try, in order, the configured one first.
+
+    An empty entry means "pass no ``--extractor-args`` at all" — i.e. let the
+    *installed* yt-dlp choose, which is a list maintained against a YouTube
+    that changes weekly. It leads the chain unless the user pinned a client
+    with ``AUTOSHORTS_PLAYER_CLIENT``, in which case that pin is respected as
+    the first pass and yt-dlp's own default becomes one of the fallbacks.
+    """
     ordered: list[str] = []
-    for group in (config.YTDLP_PLAYER_CLIENT, *config.PLAYER_CLIENT_CHAIN):
+    pinned = str(config.YTDLP_PLAYER_CLIENT or "").strip()
+    groups = (pinned,) if pinned else ()
+    for group in (*groups, *config.PLAYER_CLIENT_CHAIN):
         for name in str(group or "").split(","):
             name = name.strip()
             if name and name not in ordered:
                 ordered.append(name)
-    return ordered or [""]
+    if pinned:
+        return ordered or [""]
+    return ["", *ordered]
 
 
 def _rate_limit_state() -> dict:
@@ -359,6 +587,223 @@ def _blocked_message(wait: float) -> str:
     )
 
 
+# --------------------------------------------------------------------------
+# The rest of the diagnosis — one honest message per way a caption fetch fails
+# --------------------------------------------------------------------------
+# Every one of these replaces what used to be a single wrong sentence ("No
+# captions available for this episode"), and every one of them ends in the thing
+# the user can actually do next. They are also kept short on purpose: the job
+# error the dashboard shows is truncated, and a remedy cut off mid-sentence is
+# no remedy at all.
+_SESSION_HELP = (
+    "Fix: add a signed-in cookies.txt in Tools ▸ YouTube session (or save it "
+    "as data/cookies.txt), then press Retry."
+)
+_UPDATE_HELP = "Also update yt-dlp: `pip install -U yt-dlp`."
+# How much of yt-dlp's own line a message quotes.
+_DETAIL_LIMIT = 150
+
+
+def _join(*parts: str) -> str:
+    """Sentence-join the non-empty parts, so a missing note leaves no gap."""
+    return " ".join(str(part).strip() for part in parts if str(part or "").strip())
+
+
+def _yt_dlp_note() -> str:
+    """Which yt-dlp is installed, and whether it is old enough to be the cause."""
+    status = ytdlp_status()
+    age = status["age_days"]
+    if age is None:
+        return f"Installed yt-dlp: {status['version']}."
+    if status["stale"]:
+        return (f"Installed yt-dlp: {status['version']} ({age} days old — "
+                f"older than the {status['stale_days']} days Qyro trusts).")
+    return f"Installed yt-dlp: {status['version']} ({age} days old)."
+
+
+def _lang_note(inventory: dict | None) -> str:
+    """What the episode's own metadata says it has, for the message."""
+    if not inventory:
+        return ""
+    languages = inventory.get("languages") or []
+    if not languages:
+        return "YouTube's metadata for this episode lists no caption track."
+    shown = ", ".join(languages[:8]) + ("…" if len(languages) > 8 else "")
+    kind = "manual" if inventory.get("manual") else "auto-generated"
+    return f"This episode does have {kind} captions ({shown})."
+
+
+def _bot_check_message(detail: str, inventory: dict | None = None) -> str:
+    reason = detail_line(detail, _DETAIL_LIMIT) or "Sign in to confirm you're not a bot"
+    return _join(
+        f"YouTube refused the caption download with a bot check — “{reason}”.",
+        _lang_note(inventory),
+        _SESSION_HELP,
+        _UPDATE_HELP,
+    )
+
+
+def _refused_message(detail: str, inventory: dict | None = None,
+                     clients: int = 0) -> str:
+    """Captions exist, and every client we tried was refused them."""
+    reason = detail_line(detail, _DETAIL_LIMIT)
+    where = f" (tried {clients} player clients)" if clients > 1 else ""
+    return _join(
+        "This episode has captions, but YouTube withheld them from an "
+        f"anonymous request{where}"
+        + (f" — “{reason}”." if reason else "."),
+        _lang_note(inventory),
+        _SESSION_HELP,
+        _UPDATE_HELP,
+    )
+
+
+def _network_message(detail: str) -> str:
+    reason = detail_line(detail, _DETAIL_LIMIT) or "the connection was closed"
+    return _join(
+        f"YouTube's caption servers could not be reached — “{reason}”.",
+        "That is a connection problem, not a missing transcript: check the "
+        "network, VPN or DNS — some campus, office and mobile networks block "
+        "YouTube's API endpoints outright.",
+        "Transcripts already fetched stay cached; press Retry once it is back.",
+    )
+
+
+def _extractor_message(detail: str) -> str:
+    reason = detail_line(detail, _DETAIL_LIMIT)
+    js = _JS_RUNTIME_MARKER in str(detail or "").lower()
+    return _join(
+        "yt-dlp could not read YouTube's answer"
+        + (f" — “{reason}”." if reason else "."),
+        "That is nearly always an extractor YouTube has outrun: run "
+        "`pip install -U yt-dlp`, then press Retry.",
+        "YouTube now also needs a JavaScript runtime — install Node.js or "
+        "deno if updating alone does not help." if js else "",
+        _yt_dlp_note(),
+    )
+
+
+def _video_message(detail: str) -> str:
+    reason = detail_line(detail, _DETAIL_LIMIT) or "the video is not available"
+    return _join(
+        f"This episode cannot be fetched from YouTube — “{reason}”.",
+        "It is private, removed, age- or region-restricted, still live, or not "
+        "yet premiered; no player client or session changes that.",
+        "Pick another episode.",
+    )
+
+
+def _no_captions_message(inventory: dict | None = None) -> str:
+    """The only path allowed to say the words the user saw in v0.6.8."""
+    return _join(
+        "No captions available for this episode — YouTube's own metadata for "
+        "it lists no subtitle or auto-caption track, so there is nothing to "
+        "transcribe.",
+        "Pick another episode, or cut one yourself with Exact range on the "
+        "episode card — a manual clip renders fine without a transcript.",
+    )
+
+
+def _wrong_language_message(language: str, inventory: dict | None) -> str:
+    label = config.LANGUAGE_LABELS.get(language, language)
+    return _join(
+        f"This episode has no {label} captions.",
+        _lang_note(inventory),
+        "Set the caption language to Auto-detect and generate again — Qyro "
+        "then takes whichever track the episode actually has.",
+    )
+
+
+def _unknown_message(detail: str) -> str:
+    reason = detail_line(detail, _DETAIL_LIMIT)
+    return _join(
+        "The caption download failed and Qyro could not tell why"
+        + (f" — “{reason}”." if reason else "."),
+        "Press Retry; if it fails again, add a signed-in cookies.txt in "
+        "Tools ▸ YouTube session (or data/cookies.txt) and update yt-dlp "
+        "with `pip install -U yt-dlp`.",
+    )
+
+
+def failure_message(failures, inventory: dict | None = None) -> str:
+    """Pick the message that matches the worst thing that happened.
+
+    ``failures`` is the list of ``(kind, client, detail)`` every pass left
+    behind. The most specific kind wins — a bot check is more useful to hear
+    about than a network blip that happened on the way to it.
+    """
+    failures = list(failures or [])
+    kinds = [kind for kind, _client, _detail in failures]
+    details = [detail for _kind, _client, detail in failures if detail]
+    detail = details[-1] if details else ""
+    clients = len({client for _kind, client, _detail in failures})
+    worst = worse_kind(*kinds) if kinds else KIND_UNKNOWN
+    if worst == KIND_RATE_LIMIT:
+        return _blocked_message(_mark_rate_limited())
+    if worst == KIND_VIDEO:
+        return _video_message(detail)
+    if worst == KIND_BOT_CHECK:
+        return _bot_check_message(detail, inventory)
+    if worst == KIND_PO_TOKEN:
+        return _refused_message(detail, inventory, clients)
+    if worst == KIND_EXTRACTOR:
+        return _extractor_message(detail)
+    if worst == KIND_NETWORK:
+        return _network_message(detail)
+    if worst == KIND_NO_CAPTIONS:
+        return _no_captions_message(inventory)
+    return _unknown_message(detail)
+
+
+def _language_keys(mapping) -> list[str]:
+    """Sorted language codes out of a yt-dlp ``subtitles`` mapping."""
+    if not isinstance(mapping, dict):
+        return []
+    keys = [str(key) for key in mapping.keys() if str(key or "").strip()]
+    # The original audio language first: for an auto chain it is the best
+    # transcript there is, and it reads best in a message.
+    return sorted(keys, key=lambda code: (not code.endswith("-orig"), code))
+
+
+def caption_inventory(video_url: str, timeout: int = 180):
+    """Ask YouTube which caption tracks this episode really has.
+
+    Returns ``(inventory, kind, error)``; ``inventory`` is ``None`` when the
+    question could not be answered — which is *not* the same answer as "there
+    are none", and the caller must never treat it as one. This one request is
+    what turns "no captions available" from a guess into a fact.
+    """
+    _pace()
+    try:
+        proc = run_ytdlp(
+            ["-J", "--skip-download", "--no-playlist", video_url],
+            timeout=timeout,
+            retries=_SUBTITLE_RETRIES,
+        )
+    except RuntimeError as exc:
+        return None, classify_failure(str(exc)), str(exc)
+    try:
+        data = json.loads(proc.stdout or "")
+    except (json.JSONDecodeError, TypeError, ValueError):
+        return None, KIND_UNKNOWN, ""
+    if not isinstance(data, dict):
+        return None, KIND_UNKNOWN, ""
+    manual = _language_keys(data.get("subtitles"))
+    automatic = _language_keys(data.get("automatic_captions"))
+    ordered: list[str] = []
+    for code in (*manual, *automatic):
+        if code not in ordered:
+            ordered.append(code)
+    inventory = {
+        "manual": manual,
+        "auto": automatic,
+        "languages": ordered,
+        "title": str(data.get("title") or ""),
+        "id": str(data.get("id") or ""),
+    }
+    return inventory, KIND_OK, ""
+
+
 def _subtitle_files(video_id: str) -> list[Path]:
     files = [
         path
@@ -430,22 +875,31 @@ def load_cached_transcript(video_id: str) -> list[Segment]:
 def get_transcript(
     video_id: str, video_url: str, language: str = "auto"
 ) -> tuple[list[Segment], str]:
-    """Fetch and cache one caption track, with paced HTTP 429 retries.
+    """Fetch and cache one caption track, diagnosing every way it can fail.
 
     ``language`` (v0.6.0) picks which subtitle track to ask for first — ``hi``
     prefers Hindi, ``hinglish`` Hindi-then-English, ``auto`` keeps the v0.5.0
     English-first chain. A cached transcript always wins, so switching language
     on an already-fetched episode needs no new request.
 
-    The order matters once YouTube starts blocking anonymous caption
-    requests, and it is the whole fix for the "still rate-limiting" loop:
+    The order matters once YouTube starts refusing anonymous caption requests,
+    and it is the whole fix for the "still rate-limiting" loop:
 
     1. the normalized cache — no request at all;
     2. a caption file already on disk from an interrupted run — still no
        request, and the reason a block no longer throws away real work;
     3. an active cooldown — refuse without touching YouTube;
-    4. one pass per player client, spaced apart, because a block on ``web``
-       usually leaves another client working while retrying ``web`` never will.
+    4. one pass per player client, spaced apart, because a refusal on one
+       client usually leaves another working while retrying it never will.
+
+    v0.6.9 fixed what step 4 *counted as* a refusal. It used to be "an HTTP
+    429, and nothing else": a bot check, a PO-token skip, a TLS reset or an
+    extractor too old to parse YouTube all ended the walk after one client and
+    were reported as "No captions available for this episode" — a claim about
+    the video that nobody had checked. Now every empty pass says *why* it was
+    empty, the walk continues for anything YouTube-side, and "no captions" is
+    only said once :func:`caption_inventory` — the episode's own metadata —
+    agrees that there is nothing to fetch.
     """
     cache = config.SUBS_DIR / f"{video_id}.segments.json"
 
@@ -465,50 +919,180 @@ def get_transcript(
     if remaining is not None:
         raise TranscriptUnavailable(_cooldown_message(remaining))
 
+    chain = sub_lang_chain(language)
     clients = player_client_chain()
+    limit = max(1, min(int(config.TRANSCRIPT_MAX_PASSES), len(clients)))
+    failures: list[tuple[str, str, str]] = []   # (kind, client, detail)
+    inventory: dict | None = None
+    inventory_kind = KIND_UNKNOWN
+    inventory_error = ""
+    probed = False
     blocked = False
+
     for index, client in enumerate(clients):
-        segments, source, hit, _error = _subtitle_pass(
-            video_id, video_url, language, client, cache
+        # A 429 keeps walking the whole chain (that is the v0.6.7 escape and
+        # it costs nothing extra); anything else is capped, because rotating
+        # clients cannot fix a dead connection or a stale extractor.
+        if index >= limit and not blocked:
+            break
+        if index:
+            time.sleep(_RATE_LIMIT_BACKOFF if blocked
+                       else config.CLIENT_ROTATION_PAUSE)
+
+        langs = _languages_for_pass(chain, inventory, index > 0, language)
+        if not langs:
+            # The episode's own metadata says the language the user picked is
+            # not one it has. Say so instead of asking YouTube again.
+            raise TranscriptUnavailable(
+                _wrong_language_message(language, inventory)
+            )
+
+        segments, source, kind, error = _subtitle_pass(
+            video_id, video_url, langs, client, cache
         )
         if segments:
             _clear_rate_limit()
             return segments, source
-        if not hit:
-            # A complete pass without a 429 tried every language; another
-            # client would only repeat the same no-caption result.
-            break
-        blocked = True
-        if index + 1 < len(clients):
-            time.sleep(_RATE_LIMIT_BACKOFF)
 
-    if blocked:
-        raise TranscriptUnavailable(_blocked_message(_mark_rate_limited()))
-    raise TranscriptUnavailable("No captions available for this episode")
+        failures.append((kind, client, error))
+        if kind == KIND_RATE_LIMIT:
+            blocked = True
+            continue
+        if kind == KIND_VIDEO:
+            # Private, removed, region-locked: no client and no session helps.
+            raise TranscriptUnavailable(_video_message(error))
+        if kind != KIND_NO_CAPTIONS:
+            # Refused, unreachable, unparsed — another client may still work.
+            continue
+
+        # A clean pass that produced nothing is *evidence*, not proof: YouTube
+        # answers exactly this way when it withholds caption tracks that exist.
+        # Ask the episode what it has before telling the user it has nothing.
+        if not probed:
+            inventory, inventory_kind, inventory_error = caption_inventory(
+                video_url
+            )
+            probed = True
+        if inventory is None:
+            # The question itself failed — that answer is more honest than
+            # "no captions", unless it failed for a reason we cannot name.
+            if inventory_kind == KIND_VIDEO:
+                raise TranscriptUnavailable(_video_message(inventory_error))
+            if inventory_kind in (KIND_RATE_LIMIT, KIND_BOT_CHECK,
+                                  KIND_PO_TOKEN, KIND_NETWORK, KIND_EXTRACTOR):
+                failures.append((inventory_kind, client, inventory_error))
+                blocked = blocked or inventory_kind == KIND_RATE_LIMIT
+                continue
+            if inventory_error:
+                # An error we could not classify is not evidence of a
+                # caption-less video either.
+                raise TranscriptUnavailable(_unknown_message(inventory_error))
+            raise TranscriptUnavailable(_no_captions_message(None))
+        if inventory["languages"]:
+            # Captions exist and this client was refused them. Rotate — and
+            # from here on ask only for languages the episode really has.
+            failures.append((KIND_PO_TOKEN, client, error))
+            continue
+        if _refusal_somewhere(failures):
+            # The metadata lists nothing, but YouTube has already refused this
+            # episode once in this run — and a refusal empties a metadata
+            # listing exactly the way it empties a caption pass. Believe the
+            # refusal, not the silence: keep rotating, and let the final
+            # message tell the story the refusals add up to.
+            continue
+        raise TranscriptUnavailable(_no_captions_message(inventory))
+
+    raise TranscriptUnavailable(failure_message(failures, inventory))
+
+
+# Kinds that mean YouTube declined to answer rather than "there is nothing":
+# any of them makes an empty caption listing untrustworthy, because the same
+# refusal empties the metadata that lists captions.
+_REFUSAL_KINDS = (KIND_RATE_LIMIT, KIND_BOT_CHECK, KIND_PO_TOKEN)
+
+
+def _refusal_somewhere(failures) -> bool:
+    """Did YouTube refuse this episode at any point in this run?"""
+    return any(kind in _REFUSAL_KINDS
+               for kind, _client, _detail in (failures or []))
+
+
+def _matches_language(pattern: str, language: str) -> bool:
+    """Does a ``--sub-langs`` pattern (``en``, ``en.*``, ``all``) want this?"""
+    pattern = str(pattern or "").strip()
+    language = str(language or "").strip()
+    if not pattern or not language:
+        return False
+    if pattern in ("all", ".*") or pattern == language:
+        return True
+    if "*" in pattern:
+        stem = pattern.split("*", 1)[0].rstrip(".-")
+        return bool(stem) and language.startswith(stem)
+    return False
+
+
+def _languages_for_pass(
+    chain: list[str],
+    inventory: dict | None,
+    rotation: bool,
+    language: str = "auto",
+) -> list[str]:
+    """Which languages the next player client should be asked for.
+
+    The first pass keeps the configured chain untouched. Once we are rotating,
+    the point is to spend as few requests as possible on a client that has not
+    been refused yet — so if the episode's metadata is known, ask only for the
+    tracks it actually has (an ``auto`` choice also takes the episode's own
+    language, which is the transcript the user wanted all along), and if it is
+    not known, ask the first few.
+
+    An empty list means "the language the user picked does not exist on this
+    episode", which the caller turns into a message rather than a request.
+    """
+    chain = list(chain or [])
+    if not rotation:
+        return chain
+    cap = max(1, int(config.TRANSCRIPT_ROTATION_LANGUAGES))
+    known = (inventory or {}).get("languages") or []
+    if known:
+        wanted = [code for code in known
+                  if any(_matches_language(pattern, code) for pattern in chain)]
+        if not wanted and str(language or "auto").strip().lower() == "auto":
+            # Auto-detect means auto-detect: take the episode's own track.
+            wanted = known[:1]
+        return wanted[:cap]
+    if str(language or "auto").strip().lower() != "auto":
+        # An explicit choice with nothing to aim at: let the caller say so.
+        return []
+    return chain[:cap]
 
 
 def _subtitle_pass(
     video_id: str,
     video_url: str,
-    language: str,
+    langs: list[str],
     client: str,
     cache: Path,
-) -> tuple[list[Segment], str, bool, str]:
+) -> tuple[list[Segment], str, str, str]:
     """One caption fetch against a single player client.
 
-    Returns ``(segments, source_name, rate_limited, error)``. Languages are
-    walked one per request on purpose — asking yt-dlp for several at once is
-    what triggers YouTube's HTTP 429s — and a 429 stops the walk at once so
-    the caller can move to the next client instead of spending more requests
-    on one that is already blocked.
+    Returns ``(segments, source_name, kind, error)``. ``kind`` is one of the
+    ``KIND_*`` values and is the reason the pass came back empty — the
+    distinction the caller walks the client chain on. Languages are walked one
+    per request on purpose — asking yt-dlp for several at once is what triggers
+    YouTube's HTTP 429s — and a 429 stops the walk at once so the caller can
+    move to the next client instead of spending more requests on one that is
+    already blocked.
     """
     prefix = config.SUBS_DIR / video_id
     error = ""
+    kind = KIND_NO_CAPTIONS
 
-    for sub_lang in sub_lang_chain(language):
+    for sub_lang in langs:
         _pace()
+        output = ""
         try:
-            run_ytdlp(
+            proc = run_ytdlp(
                 [
                     "--skip-download",
                     "--write-subs", "--write-auto-subs",
@@ -524,16 +1108,38 @@ def _subtitle_pass(
                 timeout=300,
                 retries=_SUBTITLE_RETRIES,
             )
+            # Tolerate a stub/None return: the *output* is a diagnostic, and
+            # a missing one must never be what fails a caption fetch.
+            output = "" if proc is None else (
+                f"{getattr(proc, 'stdout', '') or ''}\n"
+                f"{getattr(proc, 'stderr', '') or ''}"
+            )
         except RuntimeError as exc:      # RateLimited included
             error = str(exc)
-            if is_rate_limit_error(error):
-                return [], "", True, error
-            # A missing language or unavailable track is not fatal. Still
-            # inspect disk first because yt-dlp can leave a usable subtitle
-            # file even when a later metadata request fails.
+            seen = classify_failure(error)
+            kind = worse_kind(kind, seen)
+            if seen != KIND_UNKNOWN:
+                # None of these are about the *language* that was asked for: a
+                # block, a bot check, a withheld caption track, a private video,
+                # a dead connection or a broken extractor refuses every language
+                # the same way. Stop the walk here and let the caller decide
+                # whether another player client is worth asking — which is what
+                # v0.6.8 never did, because it only ever stopped for a 429.
+                return [], "", kind, error
+            # An unrecognised failure might still be per-language, so the walk
+            # continues and the disk is checked: yt-dlp can leave a usable
+            # subtitle file behind even when a later request fails.
 
         files = _subtitle_files(video_id)
         if not files:
+            if not error:
+                # A clean exit with nothing on disk: read the output, because
+                # this is where YouTube's PO-token refusal shows up — and where
+                # v0.6.8 saw only silence and said "no captions".
+                verdict = classify_caption_output(output)
+                if verdict != KIND_NO_CAPTIONS:
+                    kind = worse_kind(kind, verdict)
+                    error = error or detail_line(output)
             continue
 
         source_name = files[0].name
@@ -546,16 +1152,19 @@ def _subtitle_pass(
             # language attempts.
             for path in files:
                 path.unlink(missing_ok=True)
+            kind = worse_kind(kind, KIND_UNKNOWN)
+            error = error or f"yt-dlp wrote {source_name} but it held no readable captions"
             continue
 
         try:
             _write_cache(cache, segments)
         except OSError:
-            return [], "", False, error
+            return [], "", kind, error
         _discard_subtitle_files(video_id)
-        return segments, source_name, False, ""
+        return segments, source_name, KIND_OK, ""
 
-    return [], "", False, error
+    return [], "", kind, error
+
 
 
 def _load_cached_segments(path: Path) -> list[Segment]:
@@ -642,7 +1251,17 @@ def download_video(video_id: str, video_url: str) -> Path:
             )
             break
         except RuntimeError as exc:
-            if not is_rate_limit_error(str(exc)):
+            kind = classify_failure(str(exc))
+            if kind in (KIND_BOT_CHECK, KIND_PO_TOKEN):
+                # The raw yt-dlp line is honest but not actionable; the cure
+                # for a refused download is the same one captions need.
+                what = ("a bot check" if kind == KIND_BOT_CHECK
+                        else "a withheld stream (YouTube's PO Token check)")
+                raise RuntimeError(
+                    f"YouTube refused this video download with {what} — "
+                    f"{detail_line(str(exc))}. " + _SESSION_HELP
+                ) from exc
+            if kind != KIND_RATE_LIMIT:
                 raise
             if index + 1 >= len(clients):
                 _mark_rate_limited()

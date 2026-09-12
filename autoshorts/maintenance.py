@@ -877,11 +877,27 @@ def clear_cookies() -> dict:
     return {"ok": True, **cookies_status()}
 
 
+def ytdlp_health(ttl: float = VERSIONS_TTL) -> dict:
+    """The installed extractor's version and age, cached like ``versions_info``.
+
+    A stale yt-dlp is a cause of every caption failure Qyro cannot fix itself,
+    so the health strip says so before the user has to trigger one.
+    """
+    global _ytdlp_health_cache
+    cached_at, cached = _ytdlp_health_cache
+    if cached and (time.time() - cached_at) < ttl:
+        return dict(cached)
+    info = youtube.ytdlp_status()
+    _ytdlp_health_cache = (time.time(), info)
+    return dict(info)
+
+
 def youtube_status() -> dict:
-    """``/api/health`` slice: session installed, and any block standing."""
+    """``/api/health`` slice: session, any block standing, extractor age."""
     return {
         "cookies": cookies_status(),
         "rate_limit": youtube.rate_limit_status(),
+        "yt_dlp": ytdlp_health(),
     }
 
 
@@ -1511,6 +1527,7 @@ def restore_state(store: Store, data) -> dict:
 # Versions (cached)
 # --------------------------------------------------------------------------
 _versions_cache: tuple[float, dict] = (0.0, {})
+_ytdlp_health_cache: tuple[float, dict] = (0.0, {})
 
 
 def render_options_catalog() -> dict:
@@ -1630,10 +1647,10 @@ def _ffmpeg_version() -> str:
 
 
 def _ytdlp_version() -> str:
-    """yt-dlp version straight from ``yt_dlp.version`` — never CLI text."""
-    try:
-        from yt_dlp.version import __version__  # type: ignore
+    """yt-dlp version straight from ``yt_dlp.version`` — never CLI text.
 
-        return str(__version__)
-    except Exception:
-        return "missing"
+    Delegates to :func:`autoshorts.youtube.ytdlp_version` so the version the
+    health strip shows and the one a caption-failure message quotes cannot
+    drift apart.
+    """
+    return youtube.ytdlp_version() or "missing"

@@ -197,6 +197,8 @@ ic:empty { display: none; }
 }
 .chip.ok .dot { background: var(--ok); box-shadow: 0 0 0 3px rgba(52, 211, 153, 0.16); }
 .chip.bad .dot { background: var(--bad); box-shadow: 0 0 0 3px rgba(251, 113, 133, 0.16); }
+.chip.warn .dot { background: var(--warn); box-shadow: 0 0 0 3px rgba(251, 191, 36, 0.16); }
+.chip.warn { color: var(--warn); border-color: rgba(251, 191, 36, 0.28); }
 .chip.ai .dot { background: var(--violet-2); box-shadow: 0 0 0 3px rgba(77, 140, 255, 0.2); }
 
 /* ---------------------------------------------------------------- stats */

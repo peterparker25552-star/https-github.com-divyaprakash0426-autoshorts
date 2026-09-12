@@ -16,6 +16,70 @@ playlist URL ──▶ yt-dlp ──▶ transcripts ──▶ highlight engine �
                  captions)                     questions · energy)   burned-in captions)
 ```
 
+## What's new in v0.6.9 — "No captions available" was a guess
+
+One report: *"I can't generate shorts from the app version 6.8 … when I am
+clicking the generate option it is saying — Transcript unavailable: No captions
+available for this episode."* The episodes had captions. What had happened is
+that YouTube declined to hand them over, and Qyro had no word for "declined":
+`get_transcript()` had exactly two outcomes — an HTTP 429, and that sentence —
+so every other failure was reported as a caption-less video.
+
+- **Withheld captions were read as missing ones.** YouTube increasingly refuses
+  an anonymous client the caption tracks a video plainly has (its *PO Token*
+  rollout). yt-dlp reports that as a **warning**, prints
+  `[info] There are no subtitles for the requested languages`, and exits **0**
+  with nothing on disk. Qyro ran every call with `--no-warnings` — so the one
+  line that explained the empty result was deleted before anything read it, and
+  a clean exit with no file became "this episode has no captions". Caption calls
+  now keep their warnings, and a new `KIND_*` taxonomy says *why* a pass came
+  back empty: `rate_limit`, `bot_check`, `po_token`, `video_unavailable`,
+  `network`, `extractor`, `no_captions`, `unknown`.
+- **The player-client walk only walked on a 429.** v0.6.7 built the chain
+  because a refusal on one client usually leaves another working — but any other
+  failure broke the loop after the first client, so the escape hatch never
+  opened. Now a bot check, a withheld track or an unparsed response moves to the
+  next client; a private video stops at once (nothing rotates that); a dead
+  connection and a stale extractor are capped, because another client cannot fix
+  either. A 429 still walks everything.
+- **The first client was pinned to `web`** — the one YouTube challenges hardest,
+  and pinning it *overrides* the installed yt-dlp's own default chain, which is
+  maintained against a YouTube that changes weekly (it now leads with the
+  JavaScript-less `visionos` client for exactly this reason). The chain now
+  starts with an empty entry meaning "let the installed yt-dlp choose", then
+  `visionos → tv_simply → mweb → web_safari → tv → web`.
+- **"No captions available" has to be earned.** A clean-but-empty pass is now
+  evidence, not a verdict: Qyro asks yt-dlp for the episode's own metadata (one
+  request, only on that path) and only uses those words when the metadata agrees
+  there is no subtitle or auto-caption track. When it lists tracks, the message
+  says the episode **does** have captions and that they were withheld — and
+  names the cure.
+- **Auto-detect now detects.** An episode whose captions exist only in a
+  language nobody asked for (Tamil, Telugu, Marathi…) used to fail as "no
+  captions"; `auto` now takes the episode's own track, the `-orig` language
+  first. An *explicit* language choice is not quietly widened — it is told what
+  the episode has and pointed at Auto-detect.
+- **Every failure names its cure**, inside the job-error budget so the remedy is
+  never truncated: a bot check or withheld track → **Tools ▸ YouTube session**
+  (a signed-in `cookies.txt`); a stale extractor → `pip install -U yt-dlp`, with
+  the installed version and its age; a network failure → a connection problem,
+  with cached transcripts safe; a private video → another episode.
+- **The app says it before you press Generate.** `/api/health` now carries
+  `youtube.yt_dlp` (`version`, `age_days`, `stale`), the health strip shows a
+  chip (`yt-dlp 2026.08.19` · amber `yt-dlp 886d old — update` · red
+  `yt-dlp missing`), and the card's *"Fix this — add a YouTube session"* button —
+  which used to appear only for a 429 — now appears for a bot check and a
+  withheld track too, because the cure is the same.
+- **One command diagnoses an install** — `python3 tools/check_transcript.py`
+  (offline: a stub yt-dlp acts out all eight failures with YouTube's real
+  output) or `python3 tools/check_transcript.py --live "<episode url>"` (your
+  machine, a real episode, the real verdict).
+
+`tests/test_units_v069.py` and `tests/test_http_v069.py` pin all of it; three
+assertions in `tests/test_units_v067.py` moved to the new chain order and to
+what a clean-but-empty pass is now allowed to mean. Details in
+[`UPGRADE_6.9.md`](UPGRADE_6.9.md).
+
 ## What's new in v0.6.8 — the intro greets every open
 
 One report: *"The app intro is not coming while I am opening it. I can access it
@@ -469,25 +533,33 @@ Then either:
 Per episode, pick **how many shorts**, a scoring profile (**Viral**, **Story**, **Facts**, or **Energy**), a length, the framing (**blurred background** or **center crop**) and the quality (**720p** · **1080p** · **1440p** — the last one is marked
 "slow on phone"), then hit **Generate**. Under **Fine-tune** you can also set the **format** (vertical 9:16 · square 1:1 · wide 16:9), **captions** (classic · pop · minimal), a **caption brand** (Qyro Pop · Qyro Minimal · Qyro Neon), **speed** (0.5–2.0×), a **progress bar**, **silence jump-cuts** with the **silence tuner** sliders, **loudness**, the **logo remover** box (live preview, `delogo` with a `boxblur` fallback), a **music bed** with `replace`/`duck`, and **sync cuts to beats**. Use **Preview** to inspect the proposed moments (with their signal breakdown) without a media download, **Transcript** to tap out an exact range, **Exact range** to type one, **Beats** for the offline beat map, or **Chapters** to get paste-ready description chapters. Each finished short shows its score, its weighted signals, why it was picked (hook, stats, emotion…), an **upload pack** ("Made with Qyro" in its footer), an inline player, sharing, an `.srt` download, a one-click **Re-render**, plus **MP3**, **Thumb**, **Titles** and **Inspect** tools.
 
-## Rate-limit (HTTP 429) protection
+## Transcript fetching: 429s, bot checks and withheld captions
 
-Qyro deliberately trades a little speed for reliable caption fetching:
+Qyro deliberately trades a little speed for reliable caption fetching — and,
+since v0.6.9, for an *honest* answer when it fails:
+
 
 - A thread-safe global pacer keeps every yt-dlp call at least **4 seconds** apart.
 - Caption languages are tried **one per request** (`en`, `hi`, `en-orig`, `en.*`, then `hi.*`) rather than in a burst.
 - yt-dlp also waits between subtitle and HTTP requests.
 - A transcript is **recovered from `data/subs/` before any request is made**. If a run was interrupted after yt-dlp wrote `<id>.en.json3` but before it was normalized, Qyro parses that file instead of asking YouTube again — no request, even while a block is standing.
-- On a 429, the next attempt uses a **different player client** (`web` → `mweb` → `tv` → `web_safari` → `ios`), 15 seconds apart. Each client hits a different YouTube endpoint, so a block on one usually leaves another working; retrying the same client only feeds the block. Set `AUTOSHORTS_PLAYER_CLIENT` to try your own first.
+- When YouTube refuses a caption request, the next attempt uses a **different player client**: *yt-dlp's own default* → `visionos` → `tv_simply` → `mweb` → `web_safari` → `tv` → `web`, 15 s apart on a 429 and 2 s apart otherwise. Each client hits a different YouTube endpoint, so a refusal on one usually leaves another working; retrying the same client never does. The first entry pins **no** client at all, which lets the installed yt-dlp use the chain it maintains against a YouTube that changes weekly. Set `AUTOSHORTS_PLAYER_CLIENT` to try your own first (yt-dlp's default then becomes a fallback).
+- **Every refusal rotates, not only a 429.** A bot check (`Sign in to confirm you're not a bot`), a withheld caption track (YouTube's *PO Token* skip) or a response yt-dlp could not parse moves to the next client. A private/removed/region-locked video stops at once, because no client changes that. A dead connection and a stale extractor are capped at `TRANSCRIPT_MAX_PASSES` (4) clients, because rotating cannot fix either.
+- **Caption calls keep yt-dlp's warnings.** The PO-token refusal — the most common cause of an empty caption run — is a *warning* followed by a clean exit, so `--no-warnings` used to delete the only evidence and leave "no captions available" as the verdict.
+- Once the episode's caption inventory is known, a rotating pass asks only for the **languages the episode really has** (`TRANSCRIPT_ROTATION_LANGUAGES`, 3) instead of another full five-language walk — so escaping a refusal costs a couple of requests, not minutes.
 - Subtitle passes run with **one yt-dlp retry instead of three**, so a single 429 does not turn into a burst of requests.
 - The whole yt-dlp output is scanned for the block, not just the last stderr line — a real 429 is never misreported as “no captions available”.
+- **“No captions available for this episode” is now a verified claim.** A clean-but-empty pass is treated as evidence, not a verdict: Qyro asks yt-dlp for the episode's own metadata (one extra request, only on that path) and only says it when there is genuinely no subtitle or auto-caption track. When tracks exist, the message says so and names the cure. When an episode's captions are in a language nobody asked for, `auto` takes the episode's own track (the `-orig` language first); an explicit language choice is told what exists instead of failing silently.
+- Every failure message ends in **the thing to do next** — a signed-in `cookies.txt`, an updated yt-dlp (with the installed version and its age), a connection check, or another episode — and is kept inside the job-error budget so the remedy is never truncated. The health strip flags a stale or missing yt-dlp before you press Generate.
 - When every client answers 429, Qyro **remembers the block** (`data/.rate-limit.json`) and refuses to touch YouTube until it lifts, so hitting *Retry* a minute later does not restart the timer. The cooldown **steps up** — 10 → 20 → 40 → 60 minutes — and is **cleared the moment a request succeeds**. The job error and the health strip both tell you how long is left.
 - Media downloads handle 429s too: they retry once on another player client before giving up, and a subtitle block never pre-emptively refuses a download that would have worked.
 - Successfully normalized transcripts are cached in `data/subs/`, so retries and later renders do not repeat completed caption work.
 
-### Getting past a 429 for good
+### Getting past a refusal for good
 
-A persistent 429 on subtitle downloads is YouTube bot-checking *anonymous*
-requests from your IP. Two things reliably clear it:
+A persistent 429 — or a bot check, or captions withheld with a *PO Token*
+warning — is YouTube declining *anonymous* requests from your IP. Two things
+reliably clear all three:
 
 1. **Add a logged-in session — the real fix.** Export a Netscape-format
    `cookies.txt` from a browser signed in to YouTube (the “Get cookies.txt
@@ -505,18 +577,43 @@ requests from your IP. Two things reliably clear it:
 If neither is possible, wait out the cooldown and retry; the block is IP-based
 and usually lifts on its own.
 
-### Checking the fix without touching YouTube
+### Diagnosing an install
 
 ```bash
-python3 tools/check_429.py
+python3 tools/check_transcript.py                     # offline proof, no network
+python3 tools/check_transcript.py --live "<episode url>"   # this machine, a real episode
 ```
 
-Runs entirely offline with a fake yt-dlp that answers `HTTP 429`, and walks
-the four situations that used to be a dead end: escaping a blocked client,
-recovering a transcript already on disk while blocked, an honest escalating
-cooldown when every client is blocked, and installing a session. Exits `0`
-when every scenario behaves. `python3 -m unittest tests.test_units_v067 -v`
+The offline half acts out all eight caption failures with a stub yt-dlp that
+reproduces YouTube's real output — withheld captions, every client refused, a
+bot check, a dead connection, a stale extractor, a private video, a genuinely
+caption-less episode, and captions in a language nobody asked for — and shows
+what Qyro now says and does in each. The `--live` half prints your yt-dlp
+version and age, whether a session is installed, whether a block is standing,
+which caption tracks the episode really has, then fetches one and reports the
+verdict with its cure. Exit `0` when every check behaves.
+
+```bash
+python3 tools/check_429.py                            # the v0.6.7 429 scenarios
+```
+
+Still runs entirely offline with a fake yt-dlp that answers `HTTP 429`: escaping
+a blocked client, recovering a transcript already on disk while blocked, an
+honest escalating cooldown when every client is blocked, and installing a
+session. `python3 -m unittest tests.test_units_v067 tests.test_units_v069 -v`
 covers the same ground as individual test cases.
+
+### Reading the error you get
+
+| The job error says | What it means | What to do |
+| --- | --- | --- |
+| “rate-limiting subtitle downloads (HTTP 429)” | YouTube is blocking anonymous requests from your IP | Wait out the cooldown; install a session for good |
+| “refused the caption download with a bot check” | `Sign in to confirm you're not a bot` | **Tools ▸ YouTube session** — a signed-in `cookies.txt` |
+| “has captions, but YouTube withheld them … PO Token” | The tracks exist; every client tried was refused them | **Tools ▸ YouTube session**, and update yt-dlp |
+| “caption servers could not be reached” | TLS/DNS/network — nothing to do with the episode | Check the network/VPN/DNS; press Retry |
+| “yt-dlp could not read YouTube's answer” | An extractor YouTube has outrun | `pip install -U yt-dlp`, restart |
+| “episode cannot be fetched … Private video / not available in your country” | The video itself is unavailable | Pick another episode |
+| “No captions available for this episode … metadata … lists no track” | Verified: there is nothing to transcribe | Another episode, or **Exact range** (renders without captions) |
 
 ## How the highlight engine works (no API keys needed)
 
@@ -576,8 +673,7 @@ from, so the two can never disagree.
 | `AUTOSHORTS_PORT` | Port for `run.py` (default `8000`) |
 | `AUTOSHORTS_FONT` | Caption font family (default `DejaVu Sans`) |
 | `AUTOSHORTS_COOKIES` | Path to a Netscape `cookies.txt` for YouTube downloads (default `data/cookies.txt`); also settable from **Tools ▸ YouTube session** |
-| `AUTOSHORTS_PLAYER_CLIENT` | Player client tried *first* on each YouTube call; on a 429 Qyro then walks the built-in chain (`web`, `mweb`, `tv`, `web_safari`, `ios`) |
-| `AUTOSHORTS_PLAYER_CLIENT` | Override the yt-dlp player client (e.g. `tv,web_safari`) to dodge YouTube's bot check |
+| `AUTOSHORTS_PLAYER_CLIENT` | Player client(s) tried *first* on each YouTube call (e.g. `tv,web_safari`) to dodge YouTube's bot check; on a refusal Qyro then walks the built-in chain (*yt-dlp default*, `visionos`, `tv_simply`, `mweb`, `web_safari`, `tv`, `web`). Unset, the first pass pins no client at all and lets the installed yt-dlp choose |
 | `OPENAI_API_KEY` / `OPENAI_BASE_URL` / `OPENAI_MODEL` | Optional OpenAI-compatible endpoint (the engine's "custom" provider) |
 
 Engine keys are usually set in **Settings** in the UI instead of the environment;

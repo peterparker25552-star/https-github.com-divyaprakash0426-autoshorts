@@ -178,8 +178,14 @@ class RateLimitDetectionTests(unittest.TestCase):
 class PlayerClientTests(_Sandbox):
     def test_the_default_chain_walks_several_clients(self):
         chain = youtube.player_client_chain()
-        self.assertEqual(chain[0], "web")
+        # v0.6.9 moved the first pass off a pinned client: an empty entry
+        # means "no --extractor-args at all", so the *installed* yt-dlp picks
+        # with a list maintained against a YouTube that changes weekly. Pinning
+        # ``web`` first — what v0.6.7 did — overrode that judgement and chose
+        # the client YouTube most often refuses anonymous captions on.
+        self.assertEqual(chain[0], "")
         self.assertGreater(len(chain), 1)
+        self.assertIn("web", chain, "the pinned clients still run, as fallbacks")
 
     def test_a_configured_client_is_tried_first_without_duplicates(self):
         config.YTDLP_PLAYER_CLIENT = "tv,web_safari"
@@ -193,7 +199,13 @@ class PlayerClientTests(_Sandbox):
         segments, source = youtube.get_transcript(
             "vid1", "https://youtube.com/watch?v=vid1")
         self.assertTrue(segments)
-        self.assertEqual([call["client"] for call in calls], ["web", "mweb"])
+        # The retry must land somewhere *different* — that is the whole point
+        # of the rotation. v0.6.7 asserted the concrete pair ("web", "mweb");
+        # v0.6.9 leads with yt-dlp's own default, so assert the movement.
+        clients = [call["client"] for call in calls]
+        self.assertEqual(len(clients), 2)
+        self.assertNotEqual(clients[0], clients[1])
+        self.assertEqual(clients[0], "", "the first pass pins no client")
         self.assertIn("vtt", source)
         self.assertIsNone(youtube._rate_limit_remaining(),
                           "a client that worked means there is no block")
@@ -216,8 +228,12 @@ class PlayerClientTests(_Sandbox):
         self.assertIn("No captions available", str(caught.exception))
         # One language per request (that is deliberate), but every one of them
         # on the *same* client: a clean pass proves a second client would only
-        # repeat the same "no captions" answer.
-        self.assertEqual({call["client"] for call in calls}, {"web"})
+        # repeat the same "no captions" answer. v0.6.9 does check that answer
+        # against the episode's own metadata (one extra ``-J`` request), so
+        # only the *subtitle* passes are pinned to a single client here.
+        passes = [call for call in calls if "--write-subs" in call["args"]]
+        self.assertTrue(passes)
+        self.assertEqual({call["client"] for call in passes}, {""})
         self.assertIsNone(youtube._rate_limit_remaining(),
                           "no 429 means no cooldown")
 

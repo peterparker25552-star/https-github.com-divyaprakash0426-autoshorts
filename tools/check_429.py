@@ -20,6 +20,7 @@ Exit status 0 means every scenario behaved; 1 means one of them did not.
 from __future__ import annotations
 
 import base64
+import subprocess
 import sys
 import tempfile
 from pathlib import Path
@@ -78,7 +79,7 @@ def fake_ytdlp(outcomes):
         for index, flag in enumerate(args):
             if flag == "--extractor-args" and index + 1 < len(args):
                 client = str(args[index + 1]).split("=", 1)[-1]
-        calls.append({"client": client, "retries": retries})
+        calls.append({"client": client, "args": args, "retries": retries})
         outcome = pending.pop(0) if pending else None
         if isinstance(outcome, BaseException):
             raise outcome
@@ -89,7 +90,9 @@ def fake_ytdlp(outcomes):
                     prefix = Path(str(args[index + 1])).name
             (config.SUBS_DIR / f"{prefix}.en.vtt").write_text(
                 VTT, encoding="utf-8")
-        return None
+        # A real yt-dlp returns a CompletedProcess; the caption pass reads its
+        # output for the diagnosis, so the stub has to look like one.
+        return subprocess.CompletedProcess(args, 0, "", "")
 
     youtube.run_ytdlp = stub
     youtube._pace = lambda: None
@@ -108,6 +111,15 @@ def reset() -> None:
 URL = "https://youtube.com/watch?v=vid1"
 
 
+def client_label(client: str) -> str:
+    """An empty client entry means 'let the installed yt-dlp choose'.
+
+    Named ``client_label`` rather than ``label`` because ``main()`` already
+    uses ``label`` for a failed check's name.
+    """
+    return client or "yt-dlp default"
+
+
 def scenario_escape() -> None:
     print("\n1. Blocked on one client, escaped on the next")
     reset()
@@ -115,12 +127,13 @@ def scenario_escape() -> None:
     try:
         segments, source = youtube.get_transcript("vid1", URL)
     except Exception as exc:                     # noqa: BLE001
-        check("a block on 'web' does not end the run", False, repr(exc))
+        check("a block on the first client does not end the run", False, repr(exc))
         return
     used = [call["client"] for call in calls]
     check("the transcript comes back", bool(segments), f"{len(segments)} segments, {source}")
-    check("each retry used a different player client", used == ["web", "mweb"],
-          f"clients tried: {' -> '.join(used)}")
+    check("each retry used a different player client",
+          len(used) == 2 and used[0] != used[1],
+          f"clients tried: {' -> '.join(client_label(c) for c in used)}")
     check("no cooldown is recorded when a client works",
           youtube._rate_limit_remaining() is None)
 
@@ -188,7 +201,9 @@ def scenario_cookies() -> None:
 def main() -> int:
     print("Qyro — YouTube 429 check (offline, no network calls)")
     print(f"       data dir: {config.DATA_DIR}")
-    print(f"       client chain: {' -> '.join(youtube.player_client_chain())}")
+    print("       client chain: "
+          + " -> ".join(client_label(c)
+                        for c in youtube.player_client_chain()))
     for scenario in (scenario_escape, scenario_on_disk, scenario_all_blocked,
                      scenario_cookies):
         scenario()

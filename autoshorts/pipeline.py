@@ -33,6 +33,11 @@ from .transcripts import Segment, segments_for_window, to_sentences
 
 
 
+# How much of a job's error the dashboard keeps. Long enough for a caption
+# failure to arrive with both its cause and the thing to do about it.
+ERROR_MESSAGE_LIMIT = 700
+
+
 def _bounded(value, default: float, bounds: tuple[float, float]) -> float:
     """Float clamp for the silence tuner (never fails a long render)."""
     try:
@@ -146,10 +151,13 @@ class Pipeline:
             )
             self._settle_episode(ep_id, "done")
         except Exception as exc:  # surface readable errors to the UI
+            # v0.6.9: a transcript failure now carries its diagnosis *and* its
+            # remedy, and 500 characters cut the remedy off mid-sentence.
+            message = str(exc)[:ERROR_MESSAGE_LIMIT]
             self.store.update_job(
-                job_id, status="error", error=str(exc)[:500], step="error"
+                job_id, status="error", error=message, step="error"
             )
-            self._settle_episode(ep_id, "error", message=str(exc)[:500])
+            self._settle_episode(ep_id, "error", message=message)
             traceback.print_exc()
         finally:
             self.store.prune_jobs()

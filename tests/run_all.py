@@ -23,6 +23,12 @@ reload cool-down — and the harness's starved-frame scenarios), the labelled
 demo placeholder that can never pass for a downloaded video, the ``?dl=1``
 download disposition, and the retired-model rescue in the free AI engine.
 
+v0.6.9 added ``test_units_v069``: the transcript diagnosis — a caption fetch
+that comes back empty has to say *why* (a PO-token refusal, a bot check, a dead
+connection, a stale extractor, a private video), the player-client walk has to
+escape all of them and not only an HTTP 429, and "No captions available for
+this episode" may only be said once the episode's own metadata agrees.
+
 v0.6.8 added ``test_units_v068``: the other half of the ident contract — an
 *open* of the app must be greeted. A launch is told from a reload, a return to
 the foreground after 30 s counts as a launch, a busy app gets a two-second
@@ -97,6 +103,13 @@ def main() -> int:
         # not a reload, a resume is a launch, busy shortens instead of
         # cancelling, and a dead server's jobs stop looking like work.
         "tests.test_units_v068",
+        # v0.6.9 — "I can't generate shorts: Transcript unavailable: No
+        # captions available for this episode". A caption fetch now says *why*
+        # it came back empty, the player-client walk escapes every refusal and
+        # not only a 429, and "no captions" is a claim the episode's own
+        # metadata has to agree with.
+        "tests.test_units_v069",
+        "tests.test_http_v069",
     ):
         suite.addTests(loader.loadTestsFromName(module))
     runner = unittest.TextTestRunner(verbosity=1)

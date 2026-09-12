@@ -14,7 +14,7 @@ from pathlib import Path
 
 # --- Brand -----------------------------------------------------------------
 APP_NAME = "Qyro"
-APP_VERSION = "0.6.8"
+APP_VERSION = "0.6.9"
 APP_TAGLINE = "long podcasts → captioned vertical shorts"
 BRAND_CREDIT = "Made with Qyro"
 
@@ -355,10 +355,43 @@ RATE_LIMIT_STATE = DATA_DIR / ".rate-limit.json"
 
 # Player clients tried in turn when YouTube 429s / bot-checks a caption
 # request. Every client talks to a different YouTube endpoint, so a block on
-# the default ``web`` client very often leaves another one working — retrying
-# the *same* client is what used to turn a single 429 into a 10-minute
-# lock-out. ``AUTOSHORTS_PLAYER_CLIENT`` is honoured as the first choice.
-PLAYER_CLIENT_CHAIN = ("web", "mweb", "tv", "web_safari", "ios")
+# one very often leaves another working — retrying the *same* client is what
+# used to turn a single 429 into a 10-minute lock-out.
+# ``AUTOSHORTS_PLAYER_CLIENT`` is honoured as the first choice.
+#
+# The first entry is deliberately empty: it means "no --extractor-args at all",
+# i.e. whatever the *installed* yt-dlp picks for itself. That list is
+# maintained against a YouTube that changes weekly (it currently leads with the
+# JavaScript-less ``visionos`` client), and pinning ``web`` in front of it — as
+# v0.6.8 did — both overrode that judgement and chose the one client whose
+# caption tracks YouTube most often refuses to an anonymous request. ``web``
+# still runs, as the last resort rather than the first.
+PLAYER_CLIENT_CHAIN = (
+    "",             # yt-dlp's own current default chain
+    "visionos",     # JS-less, the client yt-dlp itself leads with
+    "tv_simply",
+    "mweb",
+    "web_safari",
+    "tv",
+    "web",
+)
+
+# --- v0.6.9 caption diagnosis ------------------------------------------------
+# How many player clients one caption fetch may walk when YouTube *refuses* it
+# (a bot check, a PO-token skip, a client that answers with nothing). A 429
+# still walks the whole chain — that is the v0.6.7 escape and it is cheap.
+TRANSCRIPT_MAX_PASSES = 4
+# Languages asked per client once we are rotating. The first pass keeps the
+# full chain; later ones ask only for the tracks the episode is known to have,
+# so rotating costs a couple of requests instead of another full walk.
+TRANSCRIPT_ROTATION_LANGUAGES = 3
+# Seconds between passes on clients that are *not* rate-limiting us (the pacer
+# already keeps every yt-dlp call at least ``_MIN_INTERVAL`` apart).
+CLIENT_ROTATION_PAUSE = 2.0
+# A yt-dlp older than this many days is named as a suspect in every caption
+# failure message: YouTube changes its player constantly and an old extractor
+# stops finding captions long before it stops working for anything else.
+YTDLP_STALE_DAYS = 45
 
 # Cooldown ladder: the Nth consecutive block is remembered for that many
 # seconds, so a user who keeps retrying is protected from themselves instead

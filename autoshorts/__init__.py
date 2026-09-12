@@ -71,6 +71,26 @@ all, the cure — a signed-in cookies.txt — can now be installed from
 Tools ▸ YouTube session, because "fix it in data/" is not an answer on a
 phone.
 
+v0.6.9: "I can't generate shorts — Transcript unavailable: No captions
+available for this episode." The sentence was a claim about the video and it
+was almost always wrong. get_transcript had exactly two outcomes: an HTTP 429,
+and "no captions". Everything else was folded into the second one — YouTube
+*withholding* caption tracks from an anonymous client (its "PO Token" skip,
+which yt-dlp reports as a warning and exits 0 for, so a clean run with nothing
+on disk read as a caption-less video), a bot check ("Sign in to confirm you're
+not a bot"), a TLS reset, an extractor too old to parse YouTube, and a private
+or region-locked video. And because only a 429 continued the player-client
+walk, the chain built to escape a refusal never got past its first entry —
+which was pinned to `web`, the client YouTube challenges hardest, whose
+PO-token warning `--no-warnings` then deleted before anything could read it.
+Now every empty caption pass says *why* it was empty, the walk escapes every
+YouTube-side refusal (not just a 429), the first pass leaves the client choice
+to the installed yt-dlp, "No captions available" may only be said once the
+episode's own metadata agrees, auto-detect takes a caption track in a language
+nobody thought to ask for, and each failure names its cure — a signed-in
+cookies.txt, an updated yt-dlp, a connection, or another episode. The health
+strip says when the installed extractor is too old to trust.
+
 v0.6.8: "the intro does not come when I open the app, but I can play it from
 inside the app." Three gates, each sensible on its own, added up to an ident
 that only ever played once. The seen-once flags were written for a *reload*
@@ -89,5 +109,5 @@ stops lying about being busy, "busy" shortens the ident to about two seconds
 instead of cancelling it, and the ident runs before any fetch.
 """
 
-__version__ = "0.6.8"
+__version__ = "0.6.9"
 APP_NAME = "Qyro"
