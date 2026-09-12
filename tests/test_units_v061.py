@@ -501,9 +501,9 @@ class EngineReliabilityTests(unittest.TestCase):
 
 class VersionAndDefaultsTests(unittest.TestCase):
     def test_version_bumped(self):
-        # 0.6.5 owns the file, but the floor this suite defends must still hold
+        # 0.6.6 owns the file now; this suite defends the floor it shipped on
         self.assertGreaterEqual(config.APP_VERSION, "0.6.2")
-        self.assertEqual(config.APP_VERSION, "0.6.5")
+        self.assertGreaterEqual(config.APP_VERSION, "0.6.5")
 
     def test_shorts_got_longer(self):
         self.assertEqual(config.MIN_CLIP_SECONDS, 25)

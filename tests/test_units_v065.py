@@ -223,13 +223,24 @@ class GeminiPayloadTests(unittest.TestCase):
         self.assertNotIn("thinkingBudget", json.dumps(gen))
 
     def test_gemini_2_5_still_gets_the_zero_budget(self):
+        """The 2.5 payload rule belongs to the model, not to the release.
+
+        v0.6.6 stopped *calling* a retired id first (Google closed
+        ``gemini-2.5-flash`` to new keys and every render fell back to the
+        offline pack), so this asserts both halves: the builder still pins
+        ``thinkingBudget: 0`` for a 2.5-class id, and the request that goes out
+        in its place carries the Gemini 3 shape.
+        """
+        self.assertEqual(engine._gemini_thinking("gemini-2.5-flash"),
+                         {"thinkingConfig": {"thinkingBudget": 0}})
         engine.ask_json("s", "u", {
             "ai_provider": "gemini",
             "gemini_key": "AIzaSyD-abc1234567890xyz",
             "ai_model": "gemini-2.5-flash",
         }, timeout=1)
+        self.assertIn("/models/gemini-3.6-flash:generateContent", self.seen["url"])
         gen = self.seen["payload"]["generationConfig"]
-        self.assertEqual(gen["thinkingConfig"], {"thinkingBudget": 0})
+        self.assertEqual(gen["thinkingConfig"], {"thinkingLevel": "low"})
 
 
 # --------------------------------------------------------------------------
@@ -270,10 +281,12 @@ class IntroGlitchGuardTests(unittest.TestCase):
         self.assertIn("setTimeout", chunk, "close must wait for the fade")
 
     def test_ident_version_bumped(self):
-        self.assertIn('version: "6.5-spectrum"', INTRO_JS)
+        # v0.6.6 re-cut the ident's lifecycle; the 6.5 spectrum name survives
+        self.assertRegex(INTRO_JS, r'version: "6\.[5-9]-spectrum"')
 
     def test_shell_cache_bumped_with_the_assets(self):
-        self.assertIn("qyro-v0.6.5-shell", SW_JS)
+        # the floor is the point: the shell must never name a pre-6.5 cache
+        self.assertRegex(SW_JS, r'const SHELL = "qyro-v0\.6\.[5-9][^"]*-shell"')
         self.assertNotIn("qyro-v0.6.4", SW_JS)
 
     def test_settings_ui_names_the_new_key_shape(self):

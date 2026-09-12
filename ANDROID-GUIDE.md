@@ -85,7 +85,7 @@ When it finishes you will see:
 
 ```
 ============================================================
-  ✅ Qyro v0.6.4 is installed!
+  ✅ Qyro v0.6.6 is installed!
 
   TO START IT (any time):
      open Termux and type:  bash ~/start-autoshorts.sh
@@ -174,7 +174,9 @@ background — start it first (Step 4), then tap the icon.
 2. **Pick your settings.** Tap **Fine-tune** on an episode to change how the
    short is made.
 3. **Make shorts.** Tap **Generate**. Wait while it works.
-4. **Download.** Tap the download arrow on a finished clip. Files also land in
+4. **Download.** Tap **Video** on a finished clip and Chrome saves it (from
+   v0.6.6 the app asks the server for it as an attachment, which is what
+   Android needs to save rather than play). Every file also lands in
    `~/autoshorts/data/clips/`.
 
 ### The v0.6.0 settings, in plain words
@@ -248,6 +250,38 @@ pip install -U yt-dlp
 ```
 YouTube changes often; keeping `yt-dlp` current is what fixes most download
 errors. Demo mode works with no internet at all, so you can still try the app.
+
+**"I only get a rainbow screen with a beep"**
+There are two things that look like this, and neither is a broken video:
+
+- The **intro ident** — the glowing Q that bursts into coloured beams with a
+  ta-dum. It is supposed to last about six seconds. From v0.6.6 it cannot get
+  stuck: while the phone is busy rendering, the app opens on the job instead of
+  the intro, and a hidden or laggy tab still gets its screen back. If an older
+  version froze on this, force-refresh once: Chrome menu → **Hard refresh** (or
+  reopen the home-screen icon after restarting the server — the app cache name
+  changed, so the new shell is picked up).
+- **Demo mode.** Demo shorts are cut from a synthetic colour-bar test card with
+  a tone, which is exactly what you get in the downloaded file — from v0.6.6 the
+  footage says `DEMO - SYNTHETIC TEST MEDIA, NOT A REAL VIDEO` and the short's
+  card is flagged **demo media**. To make real shorts, paste a YouTube link in
+  the top box and tap **Add**, then **Generate**.
+
+**Tapping Download opens a player instead of saving a file**
+Update to v0.6.6: the download button now asks the server for the file as an
+attachment (`?dl=1`), which is what Android's WebView needs (it ignores the plain
+"download this link" hint). The finished file also always sits in
+`~/autoshorts/data/clips/`, so `cp ~/autoshorts/data/clips/*.mp4 ~/storage/downloads/`
+works regardless.
+
+**"AI unavailable during render" after pasting a Gemini key**
+If the message names a model (`gemini-2.5-flash is no longer available to new
+users`), that is Google retiring an id, not your key. v0.6.6 calls the current
+free-tier model instead of the retired one; open **Settings** and press **Save
+settings** to keep the fix (the Model box is prefilled with the model Qyro
+actually uses, and **Follow the current default instead** clears the field
+entirely). Otherwise check the key was pasted in full — the whole key, no
+spaces, in the *Google AI Studio key* box (it may start with `AQ.` or `AIza`).
 
 **The page won't load at localhost:8000**
 - Is Termux still open with the "Qyro is starting…" message showing?

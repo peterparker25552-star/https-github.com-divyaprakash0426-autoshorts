@@ -404,7 +404,10 @@ def settings_update_from(body: dict) -> dict:
             value = ""
         if not isinstance(value, str):
             raise ServiceError(422, f"{key} must be a string")
-        value = value.strip()
+        # ``models/gemini-3.6-flash`` and ``gemini-3.6-flash`` are the same id;
+        # only the second one builds a valid URL. Normalise on the way in.
+        value = (config.normalise_model(value) if key == "ai_model"
+                 else value.strip())
         if len(value) > 300:
             raise ServiceError(422, f"{key} must be at most 300 characters")
         if key == "ai_base_url" and value and not value.lower().startswith(("http://", "https://")):
@@ -577,13 +580,45 @@ def _clip_or_404(store: Store, clip_id: str) -> dict:
     return clip
 
 
+def mark_clip_sources(clips: list[dict], episodes: list[dict]) -> list[dict]:
+    """Add the provenance fields the Shorts grid labels a clip with (v0.6.6).
+
+    Both servers call it, so the answer is identical on either backend, and so
+    a clip rendered *before* the field existed still gets flagged: its episode
+    knows it was built from the synthetic demo card.
+    """
+    by_episode = {str(episode.get("id")): episode for episode in episodes}
+    for clip in clips:
+        episode = by_episode.get(str(clip.get("episode_id") or ""))
+        source = clip_source(clip, episode)
+        clip["source"] = source
+        clip["demo_media"] = source == "demo"
+    return clips
+
+
+def clip_source(clip: dict, episode: dict | None = None) -> str:
+    """``"demo"`` when a short was cut from Qyro's synthetic placeholder media.
+
+    Older clips have no provenance field, so the episode is consulted too —
+    which is also the answer for a clip whose source file *is* the test card.
+    """
+    if clip.get("demo_media") or str(clip.get("source") or "") == "demo":
+        return "demo"
+    if episode and demo.is_demo(episode):
+        return "demo"
+    return str((clip.get("source") or (episode or {}).get("source") or "youtube"))
+
+
 def clip_probe(store: Store, clip_id: str) -> dict:
     """``GET /api/clips/{id}/probe`` — real file facts for the Clip Inspector."""
     clip = _clip_or_404(store, clip_id)
     path = config.CLIPS_DIR / str(clip.get("file") or "")
     info = ffmpeg.probe_media(path)
+    episode = store.get_episode(str(clip.get("episode_id") or "")) or {}
+    source = clip_source(clip, episode)
     info.update({
         "clip_id": clip_id,
+        "source": source,
         "stored": {
             "width": clip.get("width"),
             "height": clip.get("height"),
@@ -591,6 +626,10 @@ def clip_probe(store: Store, clip_id: str) -> dict:
             "format": clip.get("format"),
             "duration": clip.get("duration"),
             "captions_brand": (clip.get("render") or {}).get("captions_brand"),
+            # v0.6.6: where the footage came from. Demo renders are honest
+            # about being a test card, in the inspector as on the card.
+            "source": source,
+            "demo_media": source == "demo",
         },
         "missing": not info.pop("exists", False),
     })

@@ -23,6 +23,6 @@ echo "Installing Qyro dependencies (this downloads ffmpeg too)..."
 
 echo
 echo "============================================================"
-echo "  Qyro v0.6.4 installed! Start the app with:  ./run.sh"
+echo "  Qyro v0.6.6 installed! Start the app with:  ./run.sh"
 echo "  Then open http://localhost:8000 in your browser."
 echo "============================================================"

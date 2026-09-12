@@ -109,7 +109,7 @@ def api_health() -> dict:
 
 def api_state() -> dict:
     episodes = store.episodes()
-    clips = store.clips()
+    clips = maintenance.mark_clip_sources(store.clips(), episodes)
     jobs = {job["id"]: job for job in store.active_jobs()}
     by_episode: dict[str, list] = {}
     for clip in clips:
@@ -881,8 +881,13 @@ class Handler(BaseHTTPRequestHandler):
                         path = config.CLIPS_DIR / clip["file"]
                         if not path.exists():
                             raise ApiError(410, "Clip file missing on disk")
+                        # ?dl=1 = the card's download button. Android WebViews
+                        # ignore a link's `download` attribute, so the file only
+                        # reliably saves when the server says "attachment".
+                        want = str((query.get("dl") or ["0"])[0]).lower()
                         self._serve_file(
-                            path, "video/mp4", f"qyro-{clip_id}.mp4"
+                            path, "video/mp4", f"qyro-{clip_id}.mp4",
+                            attachment=want in ("1", "true", "yes"),
                         )
                         return
                     candidate = (query.get("index") or [None])[0]

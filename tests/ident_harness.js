@@ -9,7 +9,10 @@
  *
  * Scenarios cover desktop autoplay, a blocked context, an unlock tap mid-roll,
  * skip by tap, skip by Escape, reduced motion, high DPR, the sound pref off,
- * and "already seen this session".
+ * and "already seen this session" — plus the five ways v6.6 could still strand
+ * the stage over the app: a starved main thread (4 fps), rAF never coming back,
+ * the tab going hidden mid-roll, a canvas whose context is lost, and a page
+ * reloaded seconds after the ident already ran.
  */
 "use strict";
 
@@ -285,9 +288,29 @@ function makeAudioStub(rec, opts) {
 /* ------------------------------------------------------------------ *
  * Drive one scenario
  * ------------------------------------------------------------------ */
+/* A 2D context that fails the moment it is asked to paint — a lost WebGL/2D
+ * context or an out-of-memory canvas on a low-end phone. */
+function brokenCtx() {
+  const noop = () => {};
+  return {
+    setTransform: noop, clearRect: noop, beginPath: noop, closePath: noop,
+    stroke: noop, fill: noop, arc: noop, save: noop, restore: noop,
+    translate: noop, rotate: noop, scale: noop, moveTo: noop, lineTo: noop,
+    fillRect() { throw new Error("CanvasRenderingContext2D lost"); },
+    createRadialGradient: () => ({ addColorStop: noop }),
+    createLinearGradient: () => ({ addColorStop: noop }),
+    createPattern: () => null,
+    fillStyle: "", strokeStyle: "", lineWidth: 1, globalAlpha: 1,
+    globalCompositeOperation: "source-over",
+  };
+}
+
 function runScenario(cfg) {
   resetCtx();
   const { doc, overlay } = buildDocument();
+  if (cfg.throwOnPaint) {
+    matchOne(overlay, ".intro-stage").getContext = () => brokenCtx();
+  }
   const rec = {
     contexts: 0, resumeCalls: 0, resumeRefused: 0, closeCalls: 0, analysers: 0,
     fftReads: 0, buffers: [], started: [], stops: [], params: [],
@@ -344,8 +367,11 @@ function runScenario(cfg) {
   const ident = win.QyroIdent;
   const trace = [];
   let gestureDone = false;
+  let hiddenDone = false;
+  let framesDelivered = 0;
   let endedWall = null;
   let error = null;
+  const step = cfg.lag === undefined ? FRAME : cfg.lag;
 
   const pump = () => {
     // let promise chains from resume()/arm() settle between frames
@@ -363,7 +389,7 @@ function runScenario(cfg) {
   try {
     ident.boot();
     for (let i = 0; i < Math.round(FPS * 14); i += 1) {
-      now += FRAME;
+      now += step;
       if (ctxRef) ctxRef.currentTime = now / 1000;
       if (cfg.gestureAt !== undefined && !gestureDone && now / 1000 >= cfg.gestureAt) {
         gestureDone = true;
@@ -374,9 +400,19 @@ function runScenario(cfg) {
           ctxRef.state = "running";
         }
       }
+      // the phone went back to the home screen / the app switcher: rAF stops
+      if (cfg.hideAt !== undefined && !hiddenDone && now / 1000 >= cfg.hideAt) {
+        hiddenDone = true;
+        doc.hidden = true;
+        doc.dispatch("visibilitychange", { type: "visibilitychange" });
+      }
       if (overlay.classList.contains("dismissed")) { endedWall = now / 1000; break; }
+      // `noFramesAfter` starves the module: from that frame on, the browser
+      // simply never calls back, while timers keep running in the background.
+      if (cfg.noFramesAfter !== undefined && i >= cfg.noFramesAfter) rafQueue.length = 0;
       const queued = rafQueue.splice(0, rafQueue.length);
-      if (!queued.length) break;
+      if (!queued.length && !cfg.keepPumping) break;
+      framesDelivered += queued.length;
       queued.forEach((fn) => fn(now));
       trace.push({ wall: Number((now / 1000).toFixed(3)), cues: rec.started.length });
       if (overlay.classList.contains("dismissed")) { endedWall = now / 1000; break; }
@@ -394,6 +430,7 @@ function runScenario(cfg) {
 
   return {
     error,
+    frames: framesDelivered,
     classes: {
       live: overlay.classList.contains("live"),
       dismissed: overlay.classList.contains("dismissed"),
@@ -451,6 +488,30 @@ const scenarios = {
   hiDpi: { note: "devicePixelRatio 3 must be clamped, not crash", dpr: 3 },
   muted: { note: "ident sound switched off in settings", local: { "qyro.identSound": "0" } },
   again: { note: "already seen this session: nothing plays", session: { "qyro.introSeen": "1" } },
+  /* v6.6 — the report these four exist for: a phone busy encoding a short
+   * stopped having a main thread to spare, and a rAF-driven ident turned into
+   * a stuck rainbow screen with a beep. None of these may leave the stage up. */
+  starved: {
+    note: "4 frames a second: the timeline catches up instead of crawling",
+    lag: 250,
+  },
+  noFrames: {
+    note: "rAF never fires again (backgrounded/frozen tab): the timer frees the app",
+    noFramesAfter: 1,
+    keepPumping: true,
+  },
+  hiddenTab: {
+    note: "the tab goes hidden mid-roll: put the stage away, do not freeze it",
+    hideAt: 3.0,
+  },
+  thrown: {
+    note: "the canvas context is lost mid-ident: dismiss instead of stranding it",
+    throwOnPaint: true,
+  },
+  cooldown: {
+    note: "reloaded seconds after a previous ident: the app shows, not the intro",
+    local: { "qyro.introSeenAt": String(Date.now() - 4000) },
+  },
 };
 
 const results = {};
@@ -465,21 +526,50 @@ const fail = [];
 const expect = (cond, msg) => { if (!cond) fail.push(msg); };
 const done = (key, r) => r.classes.live && r.classes.dismissed;
 
+// Scenarios that are *about* not painting (lost context, starved frames, a
+// seen visit) are held to the dismissal contract, not the paint contract.
+const sparse = new Set(["again", "cooldown", "thrown", "noFrames", "starved"]);
+
 Object.entries(results).forEach(([key, r]) => {
   if (r.error) fail.push(`${key}: threw ${r.error}`);
 
-  if (key === "again") {
+  if (key === "again" || key === "cooldown") {
     // a returning visit must hide the stage on the very first frame
-    if (!r.classes.dismissed) fail.push("again: seen overlay still covers the app");
-    if (!r.classes.live) fail.push("again: seen overlay must arm the CSS fail-safe off");
+    if (!r.classes.dismissed) fail.push(`${key}: seen overlay still covers the app`);
+    if (!r.classes.live) fail.push(`${key}: seen overlay must arm the CSS fail-safe off`);
     return;
   }
   if (!r.classes.live) fail.push(`${key}: overlay was never armed (.live)`);
   if (!r.classes.dismissed) fail.push(`${key}: overlay left covering the app`);
-  if (r.sessionFlag !== "1") fail.push(`${key}: session flag not written`);
   if (r.overlayRemoved) fail.push(`${key}: overlay node was removed (replay would break)`);
+  if (sparse.has(key)) return;
+  if (r.sessionFlag !== "1") fail.push(`${key}: session flag not written`);
   if (r.drawRects < 200) fail.push(`${key}: beams were not painted (${r.drawRects} fillRects)`);
 });
+
+/* v6.6: the ident must never be the thing standing between a user and their
+ * app. Each of these is a way v6.5 could strand the stage. */
+expect(results.starved.classes.dismissed && results.starved.frames > 0,
+       "starved: a slow device must still finish the ident");
+expect(results.starved.endedWall !== null && results.starved.endedWall <= 7.5,
+       `starved: 4 fps stretched the ident to ${results.starved.endedWall}s `
+       + "(the timeline must catch up with the wall clock)");
+expect(results.starved.frames < 40,
+       `starved: ${results.starved.frames} frames were replayed instead of skipped`);
+expect(results.noFrames.classes.dismissed,
+       "noFrames: with no rAF callbacks the timer must still hand the page back");
+expect(results.noFrames.endedWall !== null && results.noFrames.endedWall <= 12,
+       `noFrames: the dismissal deadline fired late (${results.noFrames.endedWall}s)`);
+expect(results.hiddenTab.classes.dismissed,
+       "hiddenTab: a hidden tab kept the overlay up");
+expect(results.hiddenTab.endedWall !== null && results.hiddenTab.endedWall <= 3.5,
+       "hiddenTab: the stage must go away as the page is hidden, not after it");
+expect(results.thrown.classes.dismissed,
+       "thrown: a canvas that throws left the stage over the app");
+expect(results.thrown.endedWall !== null && results.thrown.endedWall < 1.0,
+       "thrown: a failed frame must end the ident at once, not spin");
+expect(results.cooldown.cues === 0 && results.cooldown.contexts === 0,
+       "cooldown: a reload storm must not rebuild the audio graph");
 
 expect(results.desktop.classes.dim, "desktop: the fade-out class never arrived");
 expect(results.desktop.classes.lockupIn && results.desktop.classes.lockupTag,

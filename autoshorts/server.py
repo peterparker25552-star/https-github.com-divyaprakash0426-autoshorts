@@ -109,7 +109,7 @@ def health():
 @app.get("/api/state")
 def state():
     episodes = store.episodes()
-    clips = store.clips()
+    clips = maintenance.mark_clip_sources(store.clips(), episodes)
     jobs = {job["id"]: job for job in store.active_jobs()}
     by_episode: dict[str, list] = {}
     for clip in clips:
@@ -428,14 +428,33 @@ def delete_clip(clip_id: str):
 
 
 @app.get("/api/clips/{clip_id}/file")
-def clip_file(clip_id: str):
+def clip_file(clip_id: str, dl: int = 0):
+    """Stream a rendered short.
+
+    ``?dl=1`` asks for it as an attachment (the card's download button): a
+    ``download`` attribute on the link is ignored by Android WebViews, so
+    without a real ``Content-Disposition`` a tap could open a player instead of
+    saving the file. Plain requests stay inline for the <video> element.
+    """
     clip = store.get_clip(clip_id)
     if not clip:
         raise HTTPException(status_code=404, detail="Clip not found")
     path = config.CLIPS_DIR / clip["file"]
     if not path.exists():
         raise HTTPException(status_code=410, detail="Clip file missing on disk")
-    return FileResponse(path, media_type="video/mp4", filename=f"qyro-{clip_id}.mp4")
+    name = f"qyro-{clip_id}.mp4"
+    if dl:
+        return FileResponse(
+            path, media_type="video/mp4", filename=name,
+            headers={"Content-Disposition": f'attachment; filename="{name}"'},
+        )
+    # Starlette's default disposition for a named file is *attachment*, which
+    # is right for a download and wrong for the <video> element that reads this
+    # same URL: inline matches what the stdlib server answers (v0.6.6).
+    return FileResponse(
+        path, media_type="video/mp4", filename=name,
+        content_disposition_type="inline",
+    )
 
 
 @app.get("/api/clips/{clip_id}/thumb")

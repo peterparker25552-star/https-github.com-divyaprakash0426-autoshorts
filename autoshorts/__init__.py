@@ -41,7 +41,21 @@ the free-tier default with the Gemini 3 thinkingLevel payload), and the intro
 ident's random glitch is gone — envelopes can no longer be scheduled behind
 the audio clock, the reverb impulse got cheaper, and a replay fades the old
 context out instead of closing it mid-sample.
+
+v0.6.6: two user reports, both about things that looked like a broken app.
+The intro ident can no longer strand a full-screen spectrum over Qyro: its
+timeline follows the wall clock instead of accumulating frames, a plain timer
+dismisses the stage even when requestAnimationFrame never returns, a hidden
+tab is put away at once, a lost canvas cannot freeze it, the CSS only shows
+the stage when JS asks for it, and a reload minutes after a run does not play
+it again. A synthetic demo render is now labelled — burned into the footage,
+badged on the short, explained in the inspector — and a placeholder can never
+be handed to a YouTube download as if it were the real video. A model id the
+provider has retired (gemini-2.5-flash and friends) is no longer called:
+Qyro calls the current free-tier default, follows up with the user's own id
+when that is what failed, says so in plain words instead of a JSON dump, and
+the Settings panel prefill shows the model that is actually live.
 """
 
-__version__ = "0.6.5"
+__version__ = "0.6.6"
 APP_NAME = "Qyro"

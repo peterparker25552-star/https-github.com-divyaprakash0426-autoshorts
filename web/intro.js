@@ -1,4 +1,4 @@
-/* Qyro v6.3 — the "Spectrum" ident.
+/* Qyro v6.6 — the "Spectrum" ident, with a hard guarantee attached.
  *
  * A glowing Q draws itself on black, charges, then bursts outward into a full
  * spectrum of vertical light beams that dance like an equalizer. Everything you
@@ -7,7 +7,7 @@
  * wordmark) — no audio file ships with the app, so the ident works offline,
  * inside the installed PWA and in a Termux WebView exactly like on a desktop.
  *
- * Three rules keep it reliable:
+ * Four rules keep it reliable:
  *   1. ONE clock. Visuals and audio both read `state.clock`; if the browser
  *      blocks autoplay the frame is held at the gate, the tap that unlocks
  *      audio resumes it, and the hit still lands on the burst.
@@ -18,6 +18,14 @@
  *   3. Only compositor-cheap work per frame: no animated CSS blur or
  *      backdrop-filter, devicePixelRatio clamped to 2, and each beam is three
  *      additive gradient passes rather than a `shadowBlur` sweep.
+ *   4. The stage ALWAYS gives the page back. v6.6 owns this one because users
+ *      hit it for real: a phone encoding a short has no idle main thread, so a
+ *      rAF-driven timeline stretched six seconds of animation into a minute of
+ *      stuck rainbow and beeping, with the app behind it. The timeline now
+ *      catches up to the wall clock instead of replaying dropped frames, a
+ *      plain timer dismisses even when rAF never fires again, a hidden tab is
+ *      put away immediately, a throwing canvas cannot strand the overlay, and
+ *      the CSS only shows the stage once JS asks for it (see `.intro-overlay`).
  */
 (function () {
   "use strict";
@@ -46,7 +54,22 @@
   };
 
   const STORE_SEEN = "qyro.introSeen";
+  const STORE_SEEN_AT = "qyro.introSeenAt";
   const STORE_SOUND = "qyro.identSound";
+
+  /* v0.6.6 — three numbers that keep the ident from ever becoming a wall
+   * between the user and their app.
+   *   reloadCoolDown  a page reload within this many seconds (a pull-to-refresh
+   *                   while a render hogs the CPU, a tab Chrome discarded and
+   *                   restored) does NOT replay the ident;
+   *   catchUpSlack    how far the wall clock may outrun the animation clock
+   *                   before dropped frames are skipped instead of replayed —
+   *                   this is the "rainbow screen stuck for a minute" fix;
+   *   deadlineSlack   grace after the timeline for the hard dismissal timer.
+   */
+  const RELOAD_COOLDOWN = 300;
+  const CATCHUP_SLACK = 0.35;
+  const DEADLINE_SLACK = 4.0;
 
   /* ------------------------------------------------------------------ *
    * Maths helpers
@@ -697,6 +720,31 @@
     try { return sessionStorage.getItem(key); } catch (error) { return null; }
   }
 
+  /* localStorage survives a discarded tab, sessionStorage does not — so the
+   * "when was the ident last shown" stamp lives there. Without it, every
+   * reload Chrome forces during a heavy render replays the full-screen ident. */
+  function storeLocal(key, value) {
+    try {
+      if (value === null) localStorage.removeItem(key);
+      else localStorage.setItem(key, String(value));
+    } catch (error) { /* private mode */ }
+  }
+
+  function readLocal(key) {
+    try { return localStorage.getItem(key); } catch (error) { return null; }
+  }
+
+  /* True when the ident ran so recently that this load must not show it. */
+  function shownRecently() {
+    const since = Number(readLocal(STORE_SEEN_AT) || "");
+    if (!since) return false;
+    const ageSeconds = (Date.now() - since) / 1000;
+    // A clock that went backwards (a restored tab, a manual date change) must
+    // not lock the ident away forever.
+    if (!(ageSeconds >= 0)) return false;
+    return ageSeconds < RELOAD_COOLDOWN;
+  }
+
   function mark(el, cls, on) {
     if (el && el.classList) el.classList.toggle(cls, !!on);
   }
@@ -716,22 +764,33 @@
     mark(s.overlay, "dim", c >= T.fade);
   }
 
+  /* Leaving the audio gate: credit the pause to heldTotal so the catch-up
+   * above never mistakes it for dropped frames, then start the score on the
+   * beat the visuals are already on. */
+  function releaseHold(s) {
+    if (s.held) s.heldTotal += Math.max(0, s.wall - s.heldAt);
+    s.held = false;
+    s.gated = true;
+    mark(s.hint, "show", false);
+    sound.start(s.clock);
+  }
+
   function frame(ts) {
     const s = state;
     if (!s || s.done || !sound) return;
-    const dt = Math.min(0.05, s.last ? (ts - s.last) / 1000 : 0.016);
+    // `raw` is the real time since the previous frame, `dt` the smooth step the
+    // animation uses. Keeping them apart is the whole point: a phone that is
+    // busy encoding cannot be made to sit through 6 seconds of animation
+    // stretched over 60 seconds of dropped frames.
+    const raw = Math.max(0, s.last ? (ts - s.last) / 1000 : 0.016);
+    const dt = Math.min(0.05, raw);
     s.last = ts;
-    s.wall += dt;
+    s.wall += raw;
 
     if (s.held) {
       // waiting for a tap: leave as soon as audio is live, never longer
       // than holdMax so the app is never held hostage by a muted tab
-      if (sound.ready || s.wall - s.heldAt >= T.holdMax) {
-        s.held = false;
-        s.gated = true;
-        mark(s.hint, "show", false);
-        sound.start(s.clock);
-      }
+      if (sound.ready || s.wall - s.heldAt >= T.holdMax) releaseHold(s);
     } else if (!s.gated && !sound.ready && !sound.playing && !sound.muted()
                && s.clock >= T.holdGate) {
       s.held = true;
@@ -746,8 +805,24 @@
     // on the burst after a mobile unlock instead of running away from it.
     if (!s.held) s.clock += dt;
 
-    render(s.clock, s.wall);
-    applyClasses(s.clock);
+    // …and if the main thread stalled (a background tab, an ffmpeg render
+    // eating every core, a 4 fps phone), jump the timeline to wherever the
+    // wall clock already is. The ident then fades out on this frame instead of
+    // crawling through the dropped ones — the stage cannot be held open by a
+    // slow device, which is what users saw as "a rainbow screen and a beep".
+    const onTime = s.held ? s.heldAt : s.wall - s.heldTotal;
+    if (!s.held && onTime > s.clock + CATCHUP_SLACK) s.clock = onTime - 0.05;
+
+    try {
+      render(s.clock, s.wall);
+      applyClasses(s.clock);
+    } catch (error) {
+      // A canvas that throws (an out-of-memory context loss on a phone, a
+      // killed 2D context) must never strand the stage over the app: run the
+      // timeline out and hand the page back.
+      s.clock = s.endAt;
+      applyClasses(s.clock);
+    }
 
     if (s.clock >= s.endAt) {
       finish(false);
@@ -762,6 +837,13 @@
     s.done = true;
     if (s.raf) window.cancelAnimationFrame(s.raf);
     s.raf = 0;
+    // The dismissal timer is a promise to the user, not a fallback: it is
+    // cleared here so a normal finish never gets doubled, and it is the reason
+    // a dead rAF loop can no longer leave a spectrum over the app.
+    if (s.deadline) {
+      window.clearTimeout(s.deadline);
+      s.deadline = 0;
+    }
     if (skipped && sound) sound.halt();
     mark(s.overlay, "dismissed", true);
     if (s.persist) store(STORE_SEEN, "1");
@@ -770,6 +852,18 @@
     // paint) which is what makes an instant, asset-free replay possible.
     state = null;
     if (typeof s.onDone === "function") s.onDone(skipped);
+  }
+
+  /* Last-resort dismissal, driven by a timer instead of by animation frames:
+   * a backgrounded tab or a main thread the encoder has eaten stops calling
+   * requestAnimationFrame, but timers still fire once it breathes again. */
+  function armDeadline(s) {
+    // The gate is the only sanctioned pause, so the worst case the user ever
+    // waits for is the timeline plus holdMax plus the slack below.
+    const ms = Math.round((s.endAt + T.holdMax + DEADLINE_SLACK) * 1000);
+    s.deadline = window.setTimeout(() => {
+      if (state === s) finish(false);
+    }, ms);
   }
 
   function detach(s) {
@@ -786,10 +880,7 @@
     sound.arm().then((live) => {
       const now = state;
       if (!live || !now || now.done || sound.playing) return;
-      now.held = false;
-      now.gated = true;
-      mark(now.hint, "show", false);
-      sound.start(now.clock);
+      releaseHold(now);
     });
   }
 
@@ -825,6 +916,7 @@
 
     if (state) {
       if (state.raf) window.cancelAnimationFrame(state.raf);
+      if (state.deadline) window.clearTimeout(state.deadline);
       detach(state);
       state.done = true;
       state = null;
@@ -861,8 +953,10 @@
       wall: 0,
       last: 0,
       raf: 0,
+      deadline: 0,
       held: false,
       heldAt: 0,
+      heldTotal: 0,
       gated: false,
       done: false,
       reduced,
@@ -897,9 +991,25 @@
     if (reduced) {
       state.clock = T.ta - 0.06;
       state.gated = true;
-      render(state.clock, 0);
-      applyClasses(state.clock);
+      try {
+        render(state.clock, 0);
+        applyClasses(state.clock);
+      } catch (error) {
+        state.clock = state.endAt;    // frame() ends it on the next tick
+        applyClasses(state.clock);
+      }
     }
+
+    // Stamp the browser, not just the session: a tab Chrome discards under
+    // memory pressure comes back as a "new" session, and a user waiting on a
+    // render should never have to sit through the ident again to see it.
+    // The header button and ?intro=1 still replay it on purpose.
+    if (state.persist) storeLocal(STORE_SEEN_AT, Date.now());
+
+    // The dismissal promise. Armed before unlock() so even a synchronous audio
+    // failure cannot strand the first frame, and independent of rAF so a
+    // starved or hidden tab still hands the page back.
+    armDeadline(state);
 
     unlock();
     state.raf = window.requestAnimationFrame(frame);
@@ -907,12 +1017,17 @@
   }
 
   document.addEventListener("visibilitychange", () => {
-    if (state && document.hidden && sound && sound.playing) sound.halt();
+    if (!state || !document.hidden) return;
+    // rAF stops entirely in a hidden tab, so a half-played ident would sit
+    // frozen over the app until the user came back. Nobody watches an intro
+    // they cannot see: stop the sound and put the stage away.
+    if (sound && sound.playing) sound.halt();
+    finish(false);
   });
 
   window.QyroIdent = {
     T,
-    version: "6.5-spectrum",
+    version: "6.6-spectrum",
     isPlaying() { return !!state && !state.done; },
     soundEnabled() {
       if (sound) return sound.enabled();
@@ -928,8 +1043,10 @@
     /* Header button / ?intro=1: forget the session flag and run it again. */
     replay() {
       store(STORE_SEEN, null);
+      storeLocal(STORE_SEEN_AT, null);
       if (state) {
         if (state.raf) window.cancelAnimationFrame(state.raf);
+        if (state.deadline) window.clearTimeout(state.deadline);
         detach(state);
         state.done = true;
       }
@@ -937,11 +1054,12 @@
       if (!document.getElementById("introOverlay")) return null;
       return play({ persist: false });
     },
-    /* Called once from app.js: shows the ident at most per browser session. */
+    /* Called once from app.js: shows the ident at most per browser session,
+     * and never twice inside a reload storm (see RELOAD_COOLDOWN). */
     boot() {
       const overlay = document.getElementById("introOverlay");
       const forced = new URLSearchParams(window.location.search).get("intro") === "1";
-      if (!forced && read(STORE_SEEN) === "1") {
+      if (!forced && (read(STORE_SEEN) === "1" || shownRecently())) {
         // Returning visitor: the stage is still in the markup, so it has to be
         // put away here — otherwise every reload shows a black sheet for the
         // whole fail-safe timeout instead of the app.

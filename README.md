@@ -16,6 +16,69 @@ playlist URL ──▶ yt-dlp ──▶ transcripts ──▶ highlight engine �
                  captions)                     questions · energy)   burned-in captions)
 ```
 
+## What's new in v0.6.6 — the ident lets go, and demo media says what it is
+
+Two reports, both "the app is broken", both something else entirely.
+
+- **The spectrum ident can no longer strand the screen.** The ident advanced its
+  timeline one clamped step per `requestAnimationFrame` callback — so on a phone
+  whose main thread is busy encoding a short, six seconds of animation became a
+  minute of stuck rainbow beams with the synthesised ta-dum still firing on the
+  audio thread ("downloading a video gives only a VIBGYOR screen with a beep").
+  `web/intro.js` now runs on the **wall clock**: dropped frames are caught up to,
+  not replayed; a plain `setTimeout` dismisses the stage even if rAF never
+  returns; a tab that goes hidden mid-ident is put away instead of frozen; and a
+  canvas whose context is lost ends the run instead of throwing out of the loop.
+  In `style.css` the overlay is **opt-in** (`visibility: hidden` until
+  `QyroIdent.play()` adds `.live`, plus a second CSS `introHardHide` lock), so a
+  stale shell, a blocked script or a half-parsed reload shows the app rather than
+  a sheet over it. `app.js` plays it only on an idle app — never while a job is
+  queued or running — and the "seen" stamp now survives in `localStorage` for five
+  minutes, so a reload storm cannot replay it. The header sparkle button and
+  `?intro=1` still play it on demand. `tests/ident_harness.js` grew five
+  scenarios (4 fps, no frames at all, hidden mid-roll, lost canvas, reload
+  cool-down) and every one of them must hand the page back.
+- **Demo renders are labelled.** The offline demo "episode" is a `testsrc2`
+  colour-bar card with a sine tone — literally the rainbow-and-beep that was
+  reported — and it used to be indistinguishable from a real short. The card is
+  now burned with `DEMO - SYNTHETIC TEST MEDIA, NOT A REAL VIDEO` through libass
+  (the same filter the captions use; `drawtext`, then a white bar, then the bare
+  card if a build has neither), every clip stores `source` / `demo_media`, the
+  Shorts card carries a red *demo media* flag, the inspector reports
+  `demo test card`, and `data/media/<id>.mp4.qyro-demo.json` marks the file on
+  disk. That marker is also what lets `yt-dlp`'s cache say "this is not the
+  video": a placeholder found in a YouTube episode's slot is deleted and
+  re-downloaded, and the pipeline refuses to cut a short out of one.
+- **A download downloads.** `/api/clips/{id}/file?dl=1` answers
+  `Content-Disposition: attachment` (a WebView ignores the `download` attribute,
+  so the header is the only thing that makes a tap save a file), while the plain
+  URL stays `inline` for the `<video>` element on the card. The FastAPI backend
+  no longer sends `attachment` for the inline case, so both servers behave the
+  same.
+- **A retired model id rescues itself.** A `gemini-2.5-flash` left in
+  `data/state.json` used to answer `HTTP 404 … no longer available to new users`
+  on every call and quietly demote every render to the offline pack. Qyro now
+  calls the provider's current free-tier model instead (`models/` prefixes are
+  stripped too, since that is the shape Google writes in its errors), keeps your
+  id as the *second* attempt when the default is what failed, reports
+  `engine.model_effective` + a one-line `engine.model_note`, prefills the
+  Settings field with the model that is actually called (with a *Follow the
+  current default* button), and turns provider failures into sentences —
+  `Google AI Studio (Gemini) does not serve gemini-2.5-flash (HTTP 404) — leave
+  Model blank in Settings to follow the current free-tier default` — instead of
+  dumping a JSON body into a toast.
+- **A render that produced nothing can no longer be filed as a finished short.**
+  If `data/media/<id>.mp4` is truncated (or shorter than the window being cut
+  from it), the old code wrote a few hundred bytes, stored the clip and marked
+  the job `done` — the card appeared, the player stayed black and the download
+  was an empty file. The pipeline now checks the output and fails the job with
+  the one thing to do about it (delete that source file, generate again), and
+  `synth_demo_video` re-synthesises a cached placeholder whose recorded length
+  does not match the transcript it is about to serve.
+- **Upgrade-safe.** Shell cache `qyro-v0.6.6-shell`, `APP_VERSION` `0.6.6`, the
+  ident reports `6.6-spectrum`, and `tests/test_units_v066.py` adds 56 tests.
+  498 pass. `UPGRADE_6.6.md` is the install/verify path.
+
 ## What's new in v0.6.5 — the search bar, the AQ. keys, and a clean ta-dum
 
 - **The search bars are fixed.** The icon and the placeholder ("Search") were drawn
@@ -346,7 +409,7 @@ required for YouTube downloads, and demo mode needs nothing at all.
 Then either:
 
 1. **Paste a playlist URL** (pre-filled with the Raj Shamani playlist) and press **Load**, or
-2. Press **Demo** — generates 3 episodes of synthetic media with crafted transcripts and runs the *entire real pipeline* (highlight scoring → clipping → captioning → thumbnails). Useful when YouTube is unreachable (e.g. restricted networks) or for a quick tour.
+2. Press **Demo** — generates 3 episodes of synthetic media with crafted transcripts and runs the *entire real pipeline* (highlight scoring → clipping → captioning → thumbnails). Useful when YouTube is unreachable (e.g. restricted networks) or for a quick tour. The footage is a labelled test card (`DEMO - SYNTHETIC TEST MEDIA, NOT A REAL VIDEO`, burnt in) and every clip made from it is flagged **demo media** in the app, so a demo short can never be mistaken for a failed download.
 
 Per episode, pick **how many shorts**, a scoring profile (**Viral**, **Story**, **Facts**, or **Energy**), a length, the framing (**blurred background** or **center crop**) and the quality (**720p** · **1080p** · **1440p** — the last one is marked
 "slow on phone"), then hit **Generate**. Under **Fine-tune** you can also set the **format** (vertical 9:16 · square 1:1 · wide 16:9), **captions** (classic · pop · minimal), a **caption brand** (Qyro Pop · Qyro Minimal · Qyro Neon), **speed** (0.5–2.0×), a **progress bar**, **silence jump-cuts** with the **silence tuner** sliders, **loudness**, the **logo remover** box (live preview, `delogo` with a `boxblur` fallback), a **music bed** with `replace`/`duck`, and **sync cuts to beats**. Use **Preview** to inspect the proposed moments (with their signal breakdown) without a media download, **Transcript** to tap out an exact range, **Exact range** to type one, **Beats** for the offline beat map, or **Chapters** to get paste-ready description chapters. Each finished short shows its score, its weighted signals, why it was picked (hook, stats, emotion…), an **upload pack** ("Made with Qyro" in its footer), an inline player, sharing, an `.srt` download, a one-click **Re-render**, plus **MP3**, **Thumb**, **Titles** and **Inspect** tools.
@@ -456,7 +519,7 @@ The web UI is a thin client over a small JSON API:
 | `GET` | `/api/jobs?limit=` | recent job history |
 | `POST` | `/api/jobs/{id}/retry` | re-queue a finished job with the same episode + parameters |
 | `GET` | `/api/clips/zip?episode_id=…` | download all or per-episode clips as a ZIP |
-| `GET` | `/api/clips/{id}/file` · `/thumb` | media files (`/thumb?index=N` serves candidate N) |
+| `GET` | `/api/clips/{id}/file` · `/thumb` | media files (`/file?dl=1` = `Content-Disposition: attachment` for the download button; `/thumb?index=N` serves candidate N) |
 | `GET` | `/api/clips/{id}/srt` | download the clip's captions as SubRip |
 | `POST` | `/api/clips/{id}/rerender` | re-render the stored range, optionally overriding render options |
 | `POST` | `/api/clips/{id}/polish` | rewrite the upload pack through the engine — 503 only when nothing is configured; any provider failure returns 200 with the offline pack plus a `notice` |
@@ -470,6 +533,8 @@ The web UI is a thin client over a small JSON API:
 
 - **Captions dependency**: automatic highlight picking and previews need a transcript. Manual ranges can still render without captions; local Whisper transcription is a natural future extension.
 - **Sandbox/network**: some hosted environments block YouTube. Qyro detects this and points you at demo mode; run it on your own machine for real downloads.
+- **The intro ident is a courtesy, not a gate**: it plays at most once per session, never twice in five minutes, never while a render is running, and always gives the page back — including when the browser stops animating. See `UPGRADE_6.6.md`.
+- **Model ids rot**: a retired provider model in `data/state.json` is demoted behind the current free-tier default rather than retried forever, so an old install keeps working after a provider shutdown. Nothing about your key or your settings is rewritten without you seeing it in Settings.
 - **Big renders on a phone**: 1440p is 4× the pixels of 720p. On mid-range ARM it is several times slower per clip; the app warns about it, and quality is per-episode so you can draft at 720p and re-render the keeper at 1440p.
 - **Upload size**: `POST /api/audio` takes base64, so its body limit is ~57 MB (≈ 40 MB of audio). Everything else keeps the 5 MB JSON cap.
 - **Responsibility**: downloading and re-publishing creators' content may be restricted by copyright and platform terms. Use for personal study or with permission.
