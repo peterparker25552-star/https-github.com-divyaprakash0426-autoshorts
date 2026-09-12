@@ -14,7 +14,7 @@ from pathlib import Path
 
 # --- Brand -----------------------------------------------------------------
 APP_NAME = "Qyro"
-APP_VERSION = "0.6.6"
+APP_VERSION = "0.6.7"
 APP_TAGLINE = "long podcasts → captioned vertical shorts"
 BRAND_CREDIT = "Made with Qyro"
 
@@ -352,6 +352,23 @@ YTDLP_PLAYER_CLIENT = os.environ.get("AUTOSHORTS_PLAYER_CLIENT", "")
 # later waits out the block instead of hammering YouTube again and restarting
 # the timer. The state file lives in the data dir, so it is per-install.
 RATE_LIMIT_STATE = DATA_DIR / ".rate-limit.json"
+
+# Player clients tried in turn when YouTube 429s / bot-checks a caption
+# request. Every client talks to a different YouTube endpoint, so a block on
+# the default ``web`` client very often leaves another one working — retrying
+# the *same* client is what used to turn a single 429 into a 10-minute
+# lock-out. ``AUTOSHORTS_PLAYER_CLIENT`` is honoured as the first choice.
+PLAYER_CLIENT_CHAIN = ("web", "mweb", "tv", "web_safari", "ios")
+
+# Cooldown ladder: the Nth consecutive block is remembered for that many
+# seconds, so a user who keeps retrying is protected from themselves instead
+# of re-triggering the block every ten minutes. A successful fetch clears it.
+RATE_LIMIT_COOLDOWNS = (600, 1200, 2400, 3600)   # 10m → 20m → 40m → 60m
+RATE_LIMIT_MAX_COOLDOWN = 3600
+
+# A cookies.txt bigger than this is not a browser export (and refusing it keeps
+# a mis-picked file from being written over a working session).
+COOKIES_MAX_BYTES = 2 * 1024 * 1024
 
 # Optional LLM refinement (any OpenAI-compatible endpoint). Off by default —
 # the built-in heuristic highlight engine works fully offline.

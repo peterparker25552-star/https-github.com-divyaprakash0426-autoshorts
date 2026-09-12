@@ -81,6 +81,11 @@ def main() -> int:
         "tests.test_units_v063",
         "tests.test_units_v065",
         "tests.test_units_v066",
+        # v0.6.7 — the YouTube 429 path: player-client rotation, on-disk
+        # transcript recovery, an honest cooldown, and the session upload
+        # that lets a phone user apply the real fix.
+        "tests.test_units_v067",
+        "tests.test_http_v067",
     ):
         suite.addTests(loader.loadTestsFromName(module))
     runner = unittest.TextTestRunner(verbosity=1)

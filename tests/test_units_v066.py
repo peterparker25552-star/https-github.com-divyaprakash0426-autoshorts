@@ -161,10 +161,12 @@ class IdentLifecycleTests(unittest.TestCase):
         self.assertRegex(SW_JS, r'const SHELL = "qyro-v0\.6\.[6-9][^"]*-shell"')
 
     def test_version_bumped_for_the_lifecycle_fix(self):
-        self.assertEqual(config.APP_VERSION, "0.6.6")
+        # A floor, not an exact pin: the fixes below shipped in 0.6.6 and
+        # every release since must keep them.
+        self.assertGreaterEqual(config.APP_VERSION, "0.6.6")
         import autoshorts
 
-        self.assertEqual(autoshorts.__version__, "0.6.6")
+        self.assertGreaterEqual(autoshorts.__version__, "0.6.6")
 
 
 @unittest.skipUnless(shutil.which("node"), "node is not installed")

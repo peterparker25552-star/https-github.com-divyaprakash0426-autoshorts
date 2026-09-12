@@ -55,7 +55,22 @@ provider has retired (gemini-2.5-flash and friends) is no longer called:
 Qyro calls the current free-tier default, follows up with the user's own id
 when that is what failed, says so in plain words instead of a JSON dump, and
 the Settings panel prefill shows the model that is actually live.
+
+v0.6.7: the "still rate-limiting" dead end. A YouTube HTTP 429 on subtitle
+downloads used to be a loop you could not escape: Qyro retried the same
+blocked player client three times with 30s/60s backoffs, read the 429 off the
+last stderr line only (so real blocks were reported as "no captions"),
+discarded a caption file already sitting in data/subs and went back to
+YouTube for it, and gated that very file behind a cooldown it refused to lift.
+Now the transcript is recovered from disk before a single request is made,
+each retry walks a different player client (web → mweb → tv → web_safari →
+ios) because a block on one usually leaves another working, the cooldown
+escalates 10 → 20 → 40 → 60 minutes and is cleared the moment a request
+succeeds, and media downloads handle 429s instead of dying on them. Best of
+all, the cure — a signed-in cookies.txt — can now be installed from
+Tools ▸ YouTube session, because "fix it in data/" is not an answer on a
+phone.
 """
 
-__version__ = "0.6.6"
+__version__ = "0.6.7"
 APP_NAME = "Qyro"

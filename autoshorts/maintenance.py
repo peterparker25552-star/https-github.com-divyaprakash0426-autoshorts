@@ -8,6 +8,7 @@ which keeps the two servers byte-for-byte identical in behaviour.
 """
 from __future__ import annotations
 
+import base64
 import csv
 import io
 import json
@@ -796,6 +797,92 @@ def _episode_or_404(store: Store, ep_id: str) -> dict:
     if not episode:
         raise ServiceError(404, "Episode not found")
     return episode
+
+
+# --------------------------------------------------------------------------
+# YouTube session (cookies.txt) — the cure for HTTP 429 that the UI can apply
+# --------------------------------------------------------------------------
+# Every browser cookies export carries one of these headers; a file with no
+# header is only accepted when it still holds tab-separated youtube.com rows.
+def _looks_like_cookies(text: str) -> bool:
+    head = str(text or "")[:4000].lower()
+    if "# netscape http cookie file" in head or "# http cookie file" in head:
+        return True
+    return "youtube.com" in head and "\t" in str(text or "")
+
+
+def cookies_status() -> dict:
+    """Whether a YouTube session is installed. Never returns the contents."""
+    path = Path(config.COOKIES_FILE)
+    lines = 0
+    if path.is_file():
+        try:
+            lines = sum(
+                1
+                for row in path.read_text(
+                    encoding="utf-8", errors="replace"
+                ).splitlines()
+                if row.strip() and not row.startswith("#")
+            )
+        except OSError:
+            lines = -1
+    return {"present": path.is_file(), "lines": lines, "path": str(path)}
+
+
+def save_cookies(body: dict) -> dict:
+    """Install a Netscape ``cookies.txt`` uploaded from the browser.
+
+    The one lasting fix for YouTube's 429 on anonymous caption requests needs
+    a signed-in session, and until now that meant finding ``data/`` on disk —
+    impossible from a phone. A fresh session also clears any standing block:
+    the note was written for an anonymous client that no longer applies.
+    """
+    payload = body if isinstance(body, dict) else {}
+    data = payload.get("data_b64")
+    if not isinstance(data, str) or not data.strip():
+        raise ServiceError(422, "data_b64 is required")
+    try:
+        raw = base64.b64decode(data.strip(), validate=True)
+    except ValueError:      # binascii.Error is a ValueError; no extra import
+        raise ServiceError(422, "data_b64 is not valid base64") from None
+    if not raw:
+        raise ServiceError(422, "the file is empty")
+    if len(raw) > config.COOKIES_MAX_BYTES:
+        raise ServiceError(
+            422, f"the file is larger than {config.COOKIES_MAX_BYTES} bytes"
+        )
+    text = raw.decode("utf-8", errors="replace")
+    if not _looks_like_cookies(text):
+        raise ServiceError(
+            422, "that does not look like a Netscape cookies.txt export"
+        )
+    path = Path(config.COOKIES_FILE)
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_name(path.name + ".tmp")
+        tmp.write_text(text, encoding="utf-8")
+        tmp.replace(path)
+    except OSError as exc:
+        raise ServiceError(500, f"could not write cookies.txt: {exc}") from exc
+    youtube._clear_rate_limit()
+    return {"ok": True, **cookies_status()}
+
+
+def clear_cookies() -> dict:
+    """Forget the installed session (and stop sending it to YouTube)."""
+    try:
+        Path(config.COOKIES_FILE).unlink(missing_ok=True)
+    except OSError as exc:
+        raise ServiceError(500, f"could not remove cookies.txt: {exc}") from exc
+    return {"ok": True, **cookies_status()}
+
+
+def youtube_status() -> dict:
+    """``/api/health`` slice: session installed, and any block standing."""
+    return {
+        "cookies": cookies_status(),
+        "rate_limit": youtube.rate_limit_status(),
+    }
 
 
 def episode_chapters(store: Store, ep_id: str, count: int = 10) -> dict:
