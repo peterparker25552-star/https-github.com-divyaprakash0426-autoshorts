@@ -119,7 +119,7 @@ def scenario_escape() -> None:
         return
     used = [call["client"] for call in calls]
     check("the transcript comes back", bool(segments), f"{len(segments)} segments, {source}")
-    check("each retry used a different player client", used == ["web", "mweb"],
+    check("native yt-dlp is tried before an explicit client", used == ["", "web"],
           f"clients tried: {' -> '.join(used)}")
     check("no cooldown is recorded when a client works",
           youtube._rate_limit_remaining() is None)

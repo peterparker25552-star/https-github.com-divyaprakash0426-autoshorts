@@ -92,7 +92,11 @@ def run_ytdlp(
     except subprocess.TimeoutExpired:
         raise RuntimeError("yt-dlp timed out — try again or pick fewer episodes.")
     if proc.returncode != 0:
-        err = (proc.stderr or proc.stdout or "").strip().splitlines()
+        # Look at both streams. Depending on yt-dlp's version, the useful
+        # YouTube error can land in stdout while the final stderr line is only
+        # a generic "download failed" message.
+        blob = f"{proc.stderr or ''}\n{proc.stdout or ''}"
+        err = blob.strip().splitlines()
         detail = next(
             (line for line in reversed(err) if line.strip() and "WARNING" not in line),
             "unknown error",
@@ -102,7 +106,6 @@ def run_ytdlp(
         # often sits further up, or in stdout when --no-warnings swallowed the
         # stderr copy. Judging by the last line alone missed real blocks and
         # reported them as "no captions available".
-        blob = f"{proc.stderr or ''}\n{proc.stdout or ''}"
         if is_rate_limit_error(blob):
             raise RateLimited(message)
         raise RuntimeError(message)
@@ -121,6 +124,26 @@ def is_rate_limit_error(text: str) -> bool:
     if "too many requests" in low or "rate limit" in low or "rate-limit" in low:
         return True
     return bool(_HTTP_429.search(low)) and ("http" in low or "error" in low)
+
+
+# A bot-check is not always returned as HTTP 429. Recent YouTube responses
+# commonly say "Sign in to confirm you're not a bot" and yt-dlp exits with a
+# normal error. Treat that response like a temporary block so Qyro can retry
+# using its native extractor first and a different player client afterwards.
+_YOUTUBE_BLOCK_MARKERS = (
+    "sign in to confirm you're not a bot",
+    "sign in to confirm you’re not a bot",
+    "confirm you're not a bot",
+    "confirm you’re not a bot",
+    "not a bot",
+    "captcha",
+)
+
+
+def is_youtube_block_error(text: str) -> bool:
+    """True for a 429 or YouTube's bot-check wording."""
+    low = str(text or "").lower()
+    return is_rate_limit_error(low) or any(marker in low for marker in _YOUTUBE_BLOCK_MARKERS)
 
 
 def sys_python() -> str:
@@ -248,12 +271,28 @@ def _youtube_extractor_args(client: str | None = None) -> list[str]:
 
 
 def player_client_chain() -> list[str]:
-    """Player clients to try, in order, the configured one first."""
+    """Player clients to try, with yt-dlp's native choice first by default.
+
+    v6.7 forced the first attempt through ``player_client=web``. That made a
+    newer yt-dlp less capable than it was on its own: YouTube increasingly
+    requires different clients, and some builds need a PO token for a forced
+    client. Version 7 deliberately restores the v6.2 behaviour for the first
+    request (the empty string means no ``--extractor-args`` flag), then rotates
+    through explicit clients only after YouTube blocks that native request.
+    An ``AUTOSHORTS_PLAYER_CLIENT`` override still takes priority.
+    """
     ordered: list[str] = []
-    for group in (config.YTDLP_PLAYER_CLIENT, *config.PLAYER_CLIENT_CHAIN):
+    configured = str(config.YTDLP_PLAYER_CLIENT or "").strip()
+    if configured:
+        groups = (configured, *config.PLAYER_CLIENT_CHAIN)
+    else:
+        # Empty is a real entry: it tells _youtube_extractor_args to let the
+        # installed yt-dlp choose the best client for its own version.
+        groups = ("", *config.PLAYER_CLIENT_CHAIN)
+    for group in groups:
         for name in str(group or "").split(","):
             name = name.strip()
-            if name and name not in ordered:
+            if name not in ordered:
                 ordered.append(name)
     return ordered or [""]
 
@@ -526,7 +565,7 @@ def _subtitle_pass(
             )
         except RuntimeError as exc:      # RateLimited included
             error = str(exc)
-            if is_rate_limit_error(error):
+            if is_youtube_block_error(error):
                 return [], "", True, error
             # A missing language or unavailable track is not fatal. Still
             # inspect disk first because yt-dlp can leave a usable subtitle
@@ -605,10 +644,13 @@ def download_video(video_id: str, video_url: str) -> Path:
     a synthetic demo test card that once landed at this path must never be
     handed to a YouTube render (that is how a colour-bar placeholder with a
     sine beep ended up shipped as someone's short).
+
+    The first network attempt intentionally behaves like v6.2: yt-dlp gets to
+    choose its own current YouTube client. Explicit player-client retries are
+    only used after a 429 or bot-check response.
     """
     from . import ffmpeg as _ffmpeg
 
-    _pace()
     dest = config.MEDIA_DIR / f"{video_id}.mp4"
     if dest.exists() and dest.stat().st_size > 10_000:
         if not _ffmpeg.is_placeholder_media(dest):
@@ -624,10 +666,9 @@ def download_video(video_id: str, video_url: str) -> Path:
         "--no-part",
     ]
     # Media comes off a different CDN than captions, so a subtitle block does
-    # not mean downloads are blocked — always try. Only when YouTube really
-    # answers 429 do we fall back to another player client, and then note the
-    # block so the next job does not walk into it blind.
-    clients = player_client_chain()[:2]
+    # not mean downloads are blocked — always try. A native yt-dlp request is
+    # attempted first; only a real 429/bot-check rotates to another client.
+    clients = player_client_chain()
     for index, client in enumerate(clients):
         _pace()
         try:
@@ -640,14 +681,15 @@ def download_video(video_id: str, video_url: str) -> Path:
                 ],
                 timeout=1800,
             )
+            _clear_rate_limit()
             break
         except RuntimeError as exc:
-            if not is_rate_limit_error(str(exc)):
+            if not is_youtube_block_error(str(exc)):
                 raise
             if index + 1 >= len(clients):
                 _mark_rate_limited()
                 raise RuntimeError(
-                    "YouTube is rate-limiting this download (HTTP 429). "
+                    "YouTube blocked this download (HTTP 429 or bot check). "
                     + _RATE_LIMIT_HELP
                 ) from exc
             time.sleep(_RATE_LIMIT_BACKOFF)

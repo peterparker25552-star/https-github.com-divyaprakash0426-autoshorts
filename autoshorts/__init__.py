@@ -87,7 +87,16 @@ a launch (the only "the app was opened" signal an installed app gives),
 recover_interrupted_jobs() parks a dead server's jobs at startup so the app
 stops lying about being busy, "busy" shortens the ident to about two seconds
 instead of cancelling it, and the ident runs before any fetch.
+
+
+v0.7.0 "Version 7": YouTube downloads use yt-dlp's native client first again,
+matching the working v0.6.2 path. The v0.6.7 forced ``player_client=web``
+request could trigger YouTube's bot check before yt-dlp could choose a client
+appropriate for the installed extractor. Version 7 only rotates explicit
+clients after a real 429 or bot-check response, recognizes both error forms,
+and keeps the offline title engine as the default so Gemini/Grok keys are not
+required to download or render videos.
 """
 
-__version__ = "0.6.8"
+__version__ = "0.7.0"
 APP_NAME = "Qyro"

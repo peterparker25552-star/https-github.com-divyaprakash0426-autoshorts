@@ -286,7 +286,7 @@ class IntroGlitchGuardTests(unittest.TestCase):
 
     def test_shell_cache_bumped_with_the_assets(self):
         # the floor is the point: the shell must never name a pre-6.5 cache
-        self.assertRegex(SW_JS, r'const SHELL = "qyro-v0\.6\.[5-9][^"]*-shell"')
+        self.assertRegex(SW_JS, r'const SHELL = "qyro-v(?:0\.6\.[5-9]|0\.7\.\d+)[^"]*-shell"')
         self.assertNotIn("qyro-v0.6.4", SW_JS)
 
     def test_settings_ui_names_the_new_key_shape(self):

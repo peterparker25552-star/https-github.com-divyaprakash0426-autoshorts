@@ -16,6 +16,19 @@ playlist URL ──▶ yt-dlp ──▶ transcripts ──▶ highlight engine �
                  captions)                     questions · energy)   burned-in captions)
 ```
 
+## What's new in v0.7.0 — **Version 7 restores YouTube downloads**
+
+Version 7 restores the working v0.6.2 YouTube request behaviour: the first
+request lets the installed `yt-dlp` choose its own current player client instead
+of forcing `player_client=web`. If YouTube returns an HTTP 429 or a bot-check
+message, Qyro then rotates through explicit clients and explains when a signed-in
+`cookies.txt` is needed. The built-in offline engine remains the default, so
+Gemini and Grok API keys are not required for downloading or rendering.
+
+The service-worker shell is `qyro-v0.7.0-shell`, and the app reports version
+`0.7.0`. See [UPGRADE_7.md](UPGRADE_7.md) for the Android upgrade and verify
+steps.
+
 ## What's new in v0.6.8 — the intro greets every open
 
 One report: *"The app intro is not coming while I am opening it. I can access it
