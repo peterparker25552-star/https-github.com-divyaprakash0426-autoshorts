@@ -163,7 +163,7 @@ class IdentLifecycleTests(unittest.TestCase):
     def test_the_shell_cache_moved_so_an_installed_pwa_gets_the_fix(self):
         import re
 
-        self.assertRegex(SW_JS, r'const SHELL = "qyro-v0\.6\.[6-9][^"]*-shell"')
+        self.assertRegex(SW_JS, r'const SHELL = "qyro-v(?:0\.6\.[6-9]|0\.7\.\d+)[^"]*-shell"')
 
     def test_version_bumped_for_the_lifecycle_fix(self):
         # A floor, not an exact pin: the fixes below shipped in 0.6.6 and

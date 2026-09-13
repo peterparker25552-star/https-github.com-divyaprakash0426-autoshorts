@@ -86,7 +86,7 @@ downloaded):
 
 ```
 ============================================================
-  ✅ Qyro v0.6.8 is installed!
+  ✅ Qyro v0.7.0 (Version 7) is installed!
 
   TO START IT (any time):
      open Termux and type:  bash ~/start-autoshorts.sh

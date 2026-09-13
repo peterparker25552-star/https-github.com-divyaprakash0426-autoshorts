@@ -69,7 +69,7 @@ class VersionTests(unittest.TestCase):
 
     def test_service_worker_cache_moved_so_the_old_intro_cannot_persist(self):
         """A PWA that kept the v6.2 shell would keep the silent intro too."""
-        self.assertRegex(SW_JS, r'const SHELL = "qyro-v0\.6\.[3-9]\S*-shell"')
+        self.assertRegex(SW_JS, r'const SHELL = "qyro-v(?:0\.6\.[3-9]|0\.7\.\d+)\S*-shell"')
         self.assertNotIn("0.6.2", SW_JS)
         self.assertIn('"/static/intro.js"', SW_JS)
 

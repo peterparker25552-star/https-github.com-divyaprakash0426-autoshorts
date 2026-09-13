@@ -149,6 +149,12 @@ class RateLimitDetectionTests(unittest.TestCase):
         self.assertFalse(youtube.is_rate_limit_error(
             "yt-dlp failed: the episode runs 429 seconds"))
 
+    def test_a_youtube_bot_check_is_a_rotatable_block(self):
+        error = "yt-dlp failed: Sign in to confirm you're not a bot"
+        self.assertTrue(youtube.is_youtube_block_error(error))
+        self.assertFalse(youtube.is_rate_limit_error(error),
+                         "bot checks are not necessarily reported as HTTP 429")
+
     def test_run_ytdlp_raises_a_subclass_callers_can_branch_on(self):
         with unittest.mock.patch.object(
             youtube.subprocess, "run",
@@ -176,9 +182,11 @@ class RateLimitDetectionTests(unittest.TestCase):
 # 2. Player-client rotation — the part that actually escapes a block
 # --------------------------------------------------------------------------
 class PlayerClientTests(_Sandbox):
-    def test_the_default_chain_walks_several_clients(self):
+    def test_the_default_chain_lets_yt_dlp_choose_first(self):
         chain = youtube.player_client_chain()
-        self.assertEqual(chain[0], "web")
+        # The empty entry means no extractor override: this is the v6.2
+        # behaviour that lets the installed yt-dlp choose its current client.
+        self.assertEqual(chain[0], "")
         self.assertGreater(len(chain), 1)
 
     def test_a_configured_client_is_tried_first_without_duplicates(self):
@@ -188,15 +196,27 @@ class PlayerClientTests(_Sandbox):
         self.assertEqual(len(chain), len(set(chain)))
         self.assertIn("web", chain)
 
+    def test_the_native_attempt_has_no_forced_client_flag(self):
+        self.assertEqual(youtube._youtube_extractor_args(""), [])
+
     def test_a_block_on_one_client_moves_to_the_next(self):
         calls = self.fake_ytdlp([RATE_LIMITED, "write"])
         segments, source = youtube.get_transcript(
             "vid1", "https://youtube.com/watch?v=vid1")
         self.assertTrue(segments)
-        self.assertEqual([call["client"] for call in calls], ["web", "mweb"])
+        self.assertEqual([call["client"] for call in calls], ["", "web"])
         self.assertIn("vtt", source)
         self.assertIsNone(youtube._rate_limit_remaining(),
                           "a client that worked means there is no block")
+
+    def test_a_bot_check_also_rotates_after_the_native_attempt(self):
+        bot_check = RuntimeError(
+            "yt-dlp failed: Sign in to confirm you're not a bot")
+        calls = self.fake_ytdlp([bot_check, "write"])
+        segments, _source = youtube.get_transcript(
+            "vid1", "https://youtube.com/watch?v=vid1")
+        self.assertTrue(segments)
+        self.assertEqual([call["client"] for call in calls], ["", "web"])
 
     def test_every_client_blocked_records_a_cooldown(self):
         self.fake_ytdlp([RATE_LIMITED] * len(youtube.player_client_chain()))
@@ -217,7 +237,7 @@ class PlayerClientTests(_Sandbox):
         # One language per request (that is deliberate), but every one of them
         # on the *same* client: a clean pass proves a second client would only
         # repeat the same "no captions" answer.
-        self.assertEqual({call["client"] for call in calls}, {"web"})
+        self.assertEqual({call["client"] for call in calls}, {""})
         self.assertIsNone(youtube._rate_limit_remaining(),
                           "no 429 means no cooldown")
 
@@ -342,13 +362,14 @@ class MediaDownloadTests(_Sandbox):
             youtube.download_video("vid1", "https://youtube.com/watch?v=vid1")
         self.assertEqual(len(calls), 1)
 
-    def test_a_media_429_falls_back_to_another_client_then_notes_the_block(self):
-        self.fake_ytdlp([RATE_LIMITED, RATE_LIMITED])
+    def test_a_media_429_falls_back_through_clients_then_notes_the_block(self):
+        self.fake_ytdlp([RATE_LIMITED] * len(youtube.player_client_chain()))
         with self.assertRaises(RuntimeError) as caught:
             youtube.download_video("vid1", "https://youtube.com/watch?v=vid1")
         self.assertIn("429", str(caught.exception))
         self.assertIn("cookies.txt", str(caught.exception))
-        self.assertEqual(len({call["client"] for call in self.calls}), 2)
+        self.assertEqual(len(self.calls), len(youtube.player_client_chain()))
+        self.assertEqual(self.calls[0]["client"], "")
         self.assertIsNotNone(youtube._rate_limit_remaining())
 
     def test_a_non_429_download_failure_is_raised_as_is(self):
